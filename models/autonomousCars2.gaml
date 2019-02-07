@@ -21,7 +21,7 @@ global{
 	// To avoid situations in which the car gets stuck a few meters away from the destination
 	float tolerated_distance <- 0.0000000000005;
 	
-	float step <- 10 #mn;		
+	float step <- 1 #mn;		
 	//Stock the number of times agents reached their goal (their house or work place)
 	//int nbGoalsAchived <- 0;
 	
@@ -35,7 +35,7 @@ global{
 	
 
 	//Number of people created
-	int n_people <- 50;
+	int n_people <- 10;
 			
 	//Variables to manage the minimal and maximal time to start working/go home
 	int min_work_start <- (8*factor);
@@ -44,7 +44,6 @@ global{
 	int max_work_end <- (18*factor);
 	
 	//Manage the speed allowed in the model for the people agents
-	float stop_speed <- 0.0   #km / #h;
 	float min_speed <- 20.0  #km / #h;
 	float max_speed <- 30.0 #km / #h; 	
 	
@@ -53,9 +52,9 @@ global{
 		ask n where each.is_traffic_signal {
 			stop << flip(0.5) ? roads_in : [] ;
 		}
-		write "created nodes";
 		create road from: shape_file_roads with:[lanes::int(read("lanes")), maxspeed::float(read("maxspeed")) °km/°h, oneway::string(read("oneway"))] {
 			geom_display <- (shape + (2.5 * lanes));
+
 			switch oneway {
 				match "no" {
 					create road {
@@ -65,14 +64,78 @@ global{
 						geom_display  <- myself.geom_display;
 						linked_road <- myself;
 						myself.linked_road <- self;
+						oneway<-'no';
 					}
 				}
 				match "-1" {
 					shape <- polyline(reverse(shape.points));
 				}
 			}
-		}	
-		write "created roads";
+		}
+
+		map general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
+		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
+
+		ask n where (empty(each.roads_out) and empty(each.roads_in)){
+			write string(self.name) + " died";
+			do die;
+		}
+		ask n where (empty(each.roads_in)){
+			if !empty(roads_out){
+				write string(self.name) + " roads_in empty";
+				road to_duplicate<- road (one_of (roads_out));
+				n s_node<- n(to_duplicate.source_node);
+				n t_node<- n(to_duplicate.target_node);
+				if !empty(s_node.roads_in) or !empty(t_node.roads_out){
+					if to_duplicate.linked_road=nil{
+						create road {
+							lanes <- to_duplicate.lanes;
+							shape <- polyline(reverse(to_duplicate.shape.points));
+							maxspeed <- to_duplicate.maxspeed;
+							geom_display  <- to_duplicate.geom_display;
+							linked_road <- to_duplicate;
+							to_duplicate.linked_road<-self;
+							created_on<-true;
+						}
+					}
+					add to_duplicate.linked_road to: roads_in;
+					roads_in<-remove_duplicates(roads_in);
+				}
+			} else{
+				write string(self.name) + " died";
+				do die;
+			}
+		}
+		ask n where (empty(each.roads_out)){
+			if !empty(roads_in){
+				write string(self.name) + " roads_out empty";
+				road to_duplicate<- road (one_of (roads_in));
+				n s_node<- n(to_duplicate.source_node);
+				n t_node<- n(to_duplicate.target_node);
+				if !empty(s_node.roads_in) or !empty(t_node.roads_out){
+					if to_duplicate.linked_road=nil{
+						create road {
+							lanes <- to_duplicate.lanes;
+							shape <- polyline(reverse(to_duplicate.shape.points));
+							maxspeed <- to_duplicate.maxspeed;
+							geom_display  <- to_duplicate.geom_display;
+							linked_road <- to_duplicate;
+							to_duplicate.linked_road<-self;
+							created_on<-true;
+						}
+					}
+					add to_duplicate.linked_road to: roads_out;
+					roads_out<-remove_duplicates(roads_out);
+				}
+				
+			} else{
+				write string(self.name) + " died";
+				do die;
+			}
+		}
+		
+		
+		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
 		
 		create building from: shape_file_buildings with:[type::string(read("type")), group::string(read("group"))]; 
 		ask building{
@@ -82,13 +145,11 @@ global{
 				color<-#blue;
 			}
 		}
-		
 		write "created buildings";
-		general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
-		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
-		
 		list<building> living_buildings<- building where (each.group='residential');
 		list<building> work_buildings <-building where (each.group='industrial');
+		
+
 		
 		create people number: n_people { 
 //			living_space <- 3.0;
@@ -122,20 +183,34 @@ global{
 		if(people_in_range!=[]){
 			write "___________________GROUPS @ " + h+" ("+ current_hour+") DAY "+(g+1)+"___________________";
 			loop one_group over: people_in_range{
-				write one_group;
+				list<string> names<-one_group collect each.name; 
+				write names;
 				loop p over: one_group{
 					p.state<- 'wait_for_lift';
 				}
-							
+//							road overlapping (self)
 				list<point>t_2 <- one_group collect each.location;
 				t_2 <- remove_duplicates(t_2);
 								
 				create cars{
-					location<-one_of(one_group).location;
+//					location <- one_of(n where empty(each.stop)).location;
+					location <- (one_of(road)).location;
 					give_lift_to<-one_group;
-					targets <- t_2; // initialized with passengers current locations;
-					current_target <- nil;
+					p_targets <- t_2; // initialized with passengers current locations;
 					next_people_state<-release_state;
+					speed <- 30 #km /#h ;
+					vehicle_length <- 3.0 #m;
+					right_side_driving <- true;
+					proba_lane_change_up <- 0.1 + (rnd(500) / 500);
+					proba_lane_change_down <- 0.5+ (rnd(500) / 500);
+					location <- one_of(n where empty(each.stop)).location;
+					security_distance_coeff <- 2 * (1.5 - rnd(1000) / 1000);  
+					proba_respect_priorities <- 1.0 - rnd(200/1000);
+					proba_respect_stops <- [1.0 - rnd(2) / 1000];
+					proba_block_node <- rnd(3) / 1000;
+					proba_use_linked_road <- 0.0;
+					max_acceleration <- 0.5 + rnd(500) / 1000;
+					speed_coeff <- 1.2 - (rnd(400) / 1000);
 				}
 			}
 		}
@@ -144,7 +219,7 @@ global{
 
 species n skills: [skill_road_node] {
 	bool is_traffic_signal;
-	int time_to_change <- 100;
+	int time_to_change <- 2;
 	int counter <- rnd (time_to_change) ;
 	
 	reflex dynamic when: is_traffic_signal {
@@ -160,12 +235,16 @@ species n skills: [skill_road_node] {
 			draw box(1,1,10) color:rgb("black");
 			draw sphere(5) at: {location.x,location.y,12} color: empty (stop[0]) ? #green : #red;
 		}
+		else {
+			draw square(5) color:#red;
+		}
 	}
 }
 
 species road skills: [skill_road] { 
 	string oneway;
 	geometry geom_display;
+	bool created_on<-false;
 	aspect geom {    
 		draw geom_display border:  #gray  color: #gray ;
 	}  
@@ -217,15 +296,17 @@ species people skills:[moving] control: fsm {
 		transition to: go_alone when: (current_hour = start_work -(factor/4)) or  (current_hour  = end_work+(factor/2));
 	}
 	state wait_for_lift{
-		write string(self.name) +" waiting for lift @ "+ current_hour + " (" +h+")";
+//		write string(self.name) +" waiting for lift @ "+ current_hour + " (" +h+")";
 	}
 	state go_alone{
 		enter{
 			color<-#crimson;
 			if(current_hour >= start_work -(factor/4)){
+				the_target<-working_place.location;
 //				write string(self.name) +" goint to work alone @ "+ current_hour + " (" +h+")";
 			}
 			if  (current_hour  >= end_work+(factor/2)){
+				the_target<-living_place.location;
 //				write string(self.name) +" goint home alone @ "+ current_hour + " (" +h+")";
 			}
 		}
@@ -252,81 +333,156 @@ species people skills:[moving] control: fsm {
 	}
 }
 
-species cars skills:[moving] control:fsm{
+species cars skills:[advanced_driving] control:fsm{
 	list<people> give_lift_to<-nil;
-	list<point> targets<-nil;
-	point current_target<-nil;
 	string next_people_state<-nil;
+	list<point> p_targets;
+	list<point> been_to;
+	point the_target;
+	n the_node;
+	list<n> to_avoid;
+	float dist<-0.0;
+	float time_needed<-0.0;
+	float starting_time;
+	float arrived_time;
 	geometry shape <- rectangle(50,100);
 	
 	state moving initial:true{
-		if current_target=nil{
-			do chose_next_target;
-		}
-		do move;
-		transition to: stop when: (location distance_to current_target)< tolerated_distance;
+//		if the_target=nil{
+//			do chose_next_target;
+//		}
+//		do move;
+//		transition to: stop when: (location distance_to current_target)< tolerated_distance;
 	} 
 	state stop{
 	} 
-	action chose_next_target{
-		remove current_target from: targets;
+	
+	reflex chose_new_target when: the_target=nil and state='moving'{
+		to_avoid<-nil;
+//		if p_targets=[]{
+//			write "h"+current_hour+ " reached all destinations: " +been_to;
+//			do die;
+//		}
+//		remove current_target from: targets;
 		if !empty(give_lift_to){
 			list<point> t <- give_lift_to collect each.location;
-			add all:t to:targets;
+			add all:t to:p_targets;
 		}
 		if !empty(passenger){
-			list<point> destinations <- passenger collect each.the_target;
-			add all:destinations to:targets;
+			list<point> destinations <- passenger collect each.the_target.location;
+			add all:destinations to:p_targets;
 		}
-		targets<-remove_duplicates(targets);
+		p_targets<-remove_duplicates(p_targets);
 		
-		current_target<- first( list(targets) sort_by (each distance_to (location)));
-		write string(self.name)+" ("+current_hour+") chose new current_target: "+current_target +" from: "+ targets + ' - ' +state;
+//		the_target<-one_of(p_targets);
+		the_target<- first( list(p_targets) sort_by (each distance_to (location)));
+		the_node<- n closest_to the_target;
+		write "\n"+string(self.name)+" h"+current_hour+ " chose new target: " + the_target + " from " +p_targets+ " and the closest node is " + the_node +" current road is "+ current_road;
 	}
-	action move {
-		write string(self.name)+" - current_target "+current_target +" location: "+ location + ' - ' +current_target distance_to location+' -'+state;
-//		map general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
-		path path_followed <- self goto [target::current_target, on::the_graph, return_path:: true,move_weights::general_speed_map];
-		list<geometry> segments <- path_followed.segments;
-		loop line over: segments {
-			float dist <- line.perimeter;
-		}
-		if current_target = location {
-			write string(self.name)+' ('+current_hour+') reached current_target '+location +' targets: '+ targets + ' - ' + state;
+
+	reflex time_to_go when: final_target = nil and the_target!=nil and state='moving'{ 
+		current_path <- compute_path(graph: road_network, target: the_node);
+//		write current_path;
+		if current_path!=nil{
+			list<road> roads_in_path <- current_path.edges;
+			loop r over:roads_in_path{
+				dist <- dist+r.shape.perimeter;
+				time_needed<- time_needed+ (r.maxspeed/r.shape.perimeter);
+			}
+			write string(self.name)+" h"+current_hour+ " current_path: "+current_path +"\n towards node "+the_node+" corresponding to current target: "+the_target+/*" from pass_targets: "+
+			pass_targets+*/" current road is "+ current_road +" Estimated time to cover all path of lenght " + dist + " meters is " +time_needed + " seconds";
+			starting_time<- time;
+			write string(self.name)+ " " + string(time) + " " + string(cycle) + " " + string(step);
+		} else if current_path=nil and length(to_avoid)<11{
+			add the_node to: to_avoid;
+			the_node<- (n-to_avoid) closest_to the_target; 
+		} else if current_path=nil and length(to_avoid)>10{
+			if !empty(passenger) and !empty(give_lift_to){
+				write string(self.name)+" h"+current_hour+ " impossible to do it. Dropping passengers "+ passenger + " and notifying people waiting " +give_lift_to;
+			} else if !empty(passenger) and empty(give_lift_to){
+				write string(self.name)+" h"+current_hour+ " impossible to do it. Dropping passengers "+ passenger;
+			}  else if empty(passenger) and !empty(give_lift_to){
+				write string(self.name)+" h"+current_hour+ " impossible to do it. Notifying people waiting " +give_lift_to;
+			}  else if empty(passenger) and empty(give_lift_to){
+				write string(self.name)+" h"+current_hour+ " impossible to do it.";
+			} 
+			
+			if !empty(passenger){
+				loop p over: (passenger){
+					release p in:world as:people{
+						location<-myself.location;
+						state<- 'go_alone';
+						living_place <- living_place ;
+						working_place <- working_place;
+						start_work <- start_work;
+						end_work <- end_work;
+					}
+				}
+			}
+			if !empty(give_lift_to){
+				loop p over:give_lift_to{
+					state<-'go_alone';
+				}
+			}
+			do to_die;
+		}	
+	}
+	reflex move when: final_target != nil and state='moving'{
+		do drive;
+//		write string(self.name)+ " still have "+ self.location distance_to the_target + " to "+ the_target +" and " +self.location distance_to the_node + " to node "+the_node+" current road is "+ current_road;
+//		write string(self.name)+ " "+ string(self.location distance_to the_node);
+		if 	(self.location distance_to the_node)=0{
+			write string(self.name)+ " " +  string(time) + " " + string(cycle) + " " + string(step);
+			arrived_time<-time;
+			final_target<-nil;
+			write string(self.name)+ " h"+current_hour+ " got to destination in "+(arrived_time-starting_time)+". Current road is "+ current_road;
+			dist<-0.0;
+			time_needed<-0.0;
+			state<-'stop';
 		}
 	}
+
 	reflex get_on_board when:!empty(give_lift_to) and state='stop'{
+		write string(self.name)+ " ready to get someone on bord";
 		list<people>toremove;
+		list<string>names;
 		loop p over: give_lift_to{
-			if p.location=current_target{
+			write string(self.name)+ " the_target " +the_target + " p location "+p.location +" are equal " + string(p.location=the_target);
+			if p.location=the_target{
 				if p.the_target!=nil{
 					add p to: toremove;
+					add p.name to: names;
+					write string(self.name)+ " capturing "+ p.name;
 					capture p as:passenger{
 						state<-'getting_a_lift';
-						the_target<-the_target;
 						color <- nil ;
 						living_place <- living_place ;
 						working_place <- working_place;
 						start_work <-start_work;
 						end_work <-end_work;
-						is_driver<-is_driver;
 					}
 				}
 			}
 		}
 		remove all:toremove from:give_lift_to;
 		if !empty(toremove){
-			write string(self.name) +' ('+current_hour+') captured '+(toremove) +' @ '+ location +' with: '+targets+ ' - ' +state;
+			write string(self.name) +' ('+current_hour+') captured '+(names) +' @ '+ location +' with: '+p_targets+ ' - ' +state;
 		}
-		do chose_next_target;
+		remove the_target from: p_targets;
+		add the_target to: been_to;
+		the_target<- nil;
 		state<-'moving';
+		
 	}
 	reflex drop_people when:!empty(passenger) and state='stop'{
+		write string(self.name)+ " ready to drop someone";
+		list<string>names;
 		list<people>dropped;
 		string substitute_state;
 		loop p over: (passenger){
-			if p.the_target = current_target{
+			if p.the_target = the_target{
 				add p to: dropped;
+				add p.name to: names;
 				if p.the_target!=location{
 					substitute_state<-'go_alone';
 				}else{
@@ -335,7 +491,7 @@ species cars skills:[moving] control:fsm{
 				release p in:world as:people{
 					location<-myself.location;
 					state<- substitute_state;
-					the_target<-the_target;
+//					the_target<-p.the_target;
 					living_place <- living_place ;
 					working_place <- working_place;
 					start_work <- start_work;
@@ -343,15 +499,41 @@ species cars skills:[moving] control:fsm{
 				}
 			}
 		}
-		if !empty(dropped){
-			write string(self.name) +' ('+current_hour+') dropped '+(dropped) +' @ '+ location +' with: '+targets+ ' - ' +state;
+		if !empty(dropped){			
+			write string(self.name) +' ('+current_hour+') dropped '+(names) +' @ '+ location +' with: '+p_targets+ ' - ' +state;
 		}
 		if empty(passenger){
-			write string(self.name) +' ('+current_hour+') DIED';
-			do die;
+//			write string(self.name) +' ('+current_hour+') DIED';
+			do to_die;
 		}
-		do chose_next_target;
+		remove the_target from: p_targets;
+		add the_target to: been_to;
+		the_target<- nil;
 		state<-'moving';
+	}
+	action to_die{
+		ask road where !empty(each.all_agents) {
+			if all_agents contains myself{
+//				write self.name + " " + self.all_agents+ " " + myself;
+//				write "removing " + myself + " from " + self.name + " all_agents";
+				remove myself from: all_agents;
+				loop s over: agents_on{
+//					write s;
+					loop l over:s{
+//						write l;
+						if list(l) contains myself{
+							remove myself from: list(l);
+//							write "removing " + myself + " from " + self.name + " agents_on";
+						}
+					
+					}
+				}				
+			}
+		}
+		current_road<-nil;
+		location<-nil;
+		write string(self.name) +' ('+current_hour+') DIED';
+		do die;
 	}
 	
 	species passenger parent: people{
@@ -361,7 +543,6 @@ species cars skills:[moving] control:fsm{
 		int start_work ;
 		int end_work ;
 		point the_target;
-		bool is_driver;
 		
 		state getting_a_lift{
 		}
@@ -370,6 +551,10 @@ species cars skills:[moving] control:fsm{
 	}
 	aspect base{
 		draw shape color: #red border: #darkred;	
+	}
+	aspect realistic{
+		draw obj_file("../includes/pod_glider_30.obj") color:rgb(255, 30, 100) rotate: 90 + heading;
+//		draw obj_file("../includes/pod_glider_30.obj") color:rgb(0,51,153) rotate: 90 + heading;
 	}
 	
 }
@@ -386,7 +571,7 @@ experiment liftToAndFromWork type: gui {
 			species n aspect: geom3D refresh:true;
 			species building aspect: base refresh:true;
 			species people aspect: base refresh: true ;
-			species cars aspect: base refresh: true ;
+			species cars aspect: realistic refresh: true ;
 		}
 	}
 }
