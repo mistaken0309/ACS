@@ -73,7 +73,7 @@ global{
 			}
 		}
 
-		map general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
+		general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
 		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
 
 		ask n where (empty(each.roads_out) and empty(each.roads_in)){
@@ -172,19 +172,23 @@ global{
 	}
 	
 	reflex create_groups  when:( ( ( current_hour >(min_work_start-(factor/2)) ) and ( current_hour < (max_work_start-(factor/4)) ) ) or ( (current_hour >min_work_end) and (current_hour <(max_work_end +(factor/2))) ) ){
+		string actual_state;
 		string release_state;
 		if  ( current_hour >(min_work_start-(factor/2)) ) and ( current_hour < (max_work_start-(factor/4)) ){
+			actual_state <- 'search_lift_work';
 			release_state <- 'working' ; 
 		}
 		if (current_hour >min_work_end) and (current_hour <(max_work_end +(factor/2))) {
+			actual_state <- 'search_lift_home';
 			release_state <- 'resting';
 		}
-		list<list<people>> people_in_range <- (people where ((each.state='search_lift' )and each.the_target!=nil) simple_clustering_by_distance 1 )  where (( (length (each)) <=5) and ( (length (each)) >0) ) ;
+		list<list<people>> people_in_range <- (people where ((each.state=actual_state )and each.the_target!=nil) simple_clustering_by_distance 1 )  where (( (length (each)) <=5) and ( (length (each)) >0) ) ;
+//		list<list<people>> people_in_range <- (people where ((each.state='search_lift' )and each.the_target!=nil) simple_clustering_by_distance 1 )  where (( (length (each)) <=5) and ( (length (each)) >3) ) ;
 		if(people_in_range!=[]){
 			write "___________________GROUPS @ " + h+" ("+ current_hour+") DAY "+(g+1)+"___________________";
 			loop one_group over: people_in_range{
 				list<string> names<-one_group collect each.name; 
-				write names;
+				write string(names) + " - "+string(one_group); 
 				loop p over: one_group{
 					p.state<- 'wait_for_lift';
 				}
@@ -258,6 +262,7 @@ species building{
 	}
 }
 
+
 species people skills:[moving] control: fsm {
 	rgb color <- #lightblue ;
 	building living_place <- nil ;
@@ -269,58 +274,46 @@ species people skills:[moving] control: fsm {
 	state resting initial:true{
 		enter{
 			color <- #lightblue;
-//			write string(self.name) +"setting state to working "+ current_hour + " (" +h+")";
 		}
-		transition to: search_lift when: current_hour = start_work-(factor/2);
+		transition to: search_lift_work when: current_hour = start_work-(factor/2);
+	}
+	state search_lift_work{
+		enter{
+				the_target <- working_place.location;
+				color<- #green;
+		}
+		transition to: go_alone when: current_hour = start_work -(int(factor/4));
+	}
+	state wait_for_lift{
+		
+	}
+	state go_alone{
+		enter{
+				the_target<-working_place.location;
+			}
+		transition to: working when: current_hour >= start_work and self.location = working_place.location;
 	}
 	state working{
 		enter{
 			color <- #blue;
 		}
-		transition to: search_lift when: current_hour = end_work;
+		transition to: search_lift_home when: current_hour = end_work;
 	}
-	state search_lift{
-		enter{
-			if(current_hour = start_work-(factor/2)){
-				the_target <- working_place.location;
-				color<- #green;
-//				write string(self.name) +" searching a lift for work @ "+ current_hour + " (" +h+")";
+	state search_lift_home{
+			enter{
+					the_target <- living_place.location;
+					color<- #cyan;				
 			}
-			if current_hour = end_work{
-				the_target <- living_place.location;
-				color<- #cyan;
-//				write string(self.name) +" searching a lift home @ "+ current_hour + " (" +h+")";
-			}
-			
-		}
-		transition to: go_alone when: (current_hour = start_work -(factor/4)) or  (current_hour  = end_work+(factor/2));
+			transition to: go_home when: current_hour = end_work+(factor/2);
 	}
-	state wait_for_lift{
-//		write string(self.name) +" waiting for lift @ "+ current_hour + " (" +h+")";
-	}
-	state go_alone{
-		enter{
-			color<-#crimson;
-			if(current_hour >= start_work -(factor/4)){
-				the_target<-working_place.location;
-//				write string(self.name) +" goint to work alone @ "+ current_hour + " (" +h+")";
-			}
-			if  (current_hour  >= end_work+(factor/2)){
+	state go_home{
+			enter{
 				the_target<-living_place.location;
-//				write string(self.name) +" goint home alone @ "+ current_hour + " (" +h+")";
 			}
-		}
-		if current_hour >= start_work and self.location = working_place.location{
-			state<- 'working';
-//			write string(self.name) +" setting state to working "+ current_hour + " (" +h+")";
-		}
-		if self.location = living_place.location{
-			state<-'resting';
-//			write string(self.name) +" setting state to resting "+ current_hour + " (" +h+")";
-		}
+			transition to: resting when: self.location = living_place.location;		
 	}
 	 
-	reflex move when: the_target!=nil and (state="go_alone"){ //state="go_home" or 
+	reflex move when: the_target!=nil and (state="go_home" or state="go_alone"){
 		path path_followed <- self goto [target::the_target, on::the_graph, return_path:: true];
 		list<geometry> segments <- path_followed.segments;
 		if the_target = location {
@@ -332,6 +325,7 @@ species people skills:[moving] control: fsm {
 		draw triangle(50) color: color border: #black;
 	}
 }
+
 
 species cars skills:[advanced_driving] control:fsm{
 	list<people> give_lift_to<-nil;
@@ -409,7 +403,15 @@ species cars skills:[advanced_driving] control:fsm{
 			
 			if !empty(passenger){
 				loop p over: (passenger){
+					string substitute_state;
+					if next_people_state='working'{
+						substitute_state<-'go_alone';
+					}
+					if next_people_state='resting'{
+						substitute_state<-'go_home';
+					}
 					release p in:world as:people{
+						name<-name;
 						location<-myself.location;
 						state<- 'go_alone';
 						living_place <- living_place ;
@@ -452,10 +454,13 @@ species cars skills:[advanced_driving] control:fsm{
 				if p.the_target!=nil{
 					add p to: toremove;
 					add p.name to: names;
+					point t<-p.the_target;
 					write string(self.name)+ " capturing "+ p.name;
 					capture p as:passenger{
+						name<-name;
 						state<-'getting_a_lift';
 						color <- nil ;
+						the_target<-t;
 						living_place <- living_place ;
 						working_place <- working_place;
 						start_work <-start_work;
@@ -483,15 +488,22 @@ species cars skills:[advanced_driving] control:fsm{
 			if p.the_target = the_target{
 				add p to: dropped;
 				add p.name to: names;
+				point t<-p.the_target;
 				if p.the_target!=location{
-					substitute_state<-'go_alone';
+					if next_people_state='working'{
+						substitute_state<-'go_alone';
+					}
+					if next_people_state='resting'{
+						substitute_state<-'go_home';
+					}
 				}else{
 					substitute_state<-next_people_state;
 				}
 				release p in:world as:people{
+					name<-name;
 					location<-myself.location;
 					state<- substitute_state;
-//					the_target<-p.the_target;
+					the_target<-t;
 					living_place <- living_place ;
 					working_place <- working_place;
 					start_work <- start_work;
@@ -575,3 +587,82 @@ experiment liftToAndFromWork type: gui {
 		}
 	}
 }
+
+
+//species people skills:[moving] control: fsm {
+//	rgb color <- #lightblue ;
+//	building living_place <- nil ;
+//	building working_place <- nil ;
+//	int start_work ;
+//	int end_work ;
+//	point the_target <- nil ;
+//
+//	state resting initial:true{
+//		enter{
+//			color <- #lightblue;
+////			write string(self.name) +"setting state to working "+ current_hour + " (" +h+")";
+//		}
+//		transition to: search_lift when: current_hour = start_work-2;
+//	}
+//	state working{
+//		enter{
+//			color <- #blue;
+//		}
+//		transition to: search_lift when: current_hour = end_work;
+//	}
+//	state search_lift{
+//		enter{
+//			if(current_hour = start_work-(factor/2)){
+//				the_target <- working_place.location;
+//				color<- #green;
+//				write string(self.name) +" searching a lift for work @ "+ current_hour + " (" +h+")";
+//			}
+//			if current_hour = end_work{
+//				the_target <- living_place.location;
+//				color<- #cyan;
+//				write string(self.name) +" searching a lift home @ "+ current_hour + " (" +h+")";
+//			}
+//			
+//		}
+//		transition to: go_alone when: (current_hour <= start_work-1) or  (current_hour  = end_work+1);
+//	}
+//	state wait_for_lift{
+////		write string(self.name) +" waiting for lift @ "+ current_hour + " (" +h+")";
+//	}
+//	state go_alone{
+//		enter{
+//			color<-#crimson;
+//			if(current_hour <= start_work){
+//				the_target<-working_place.location;
+//				write string(self.name) +" goint to work alone @ "+ current_hour + " (" +h+")";
+//			}
+//			
+//			if  (current_hour  >= end_work){
+//				the_target<-living_place.location;
+//				write string(self.name) +" goint home alone @ "+ current_hour + " (" +h+")";
+//			}
+//		}
+//		if current_hour >= start_work and self.location = working_place.location{
+//			write self.name + " "+ string(the_target.location = working_place.location and the_target.location=self.location);
+//			state<- 'working';
+////			write string(self.name) +" setting state to working "+ current_hour + " (" +h+")";
+//		}
+//		if self.location = living_place.location{
+//			write self.name + " "+ string(the_target.location = living_place.location and the_target.location=self.location);
+//			state<-'resting';
+////			write string(self.name) +" setting state to resting "+ current_hour + " (" +h+")";
+//		}
+//	}
+//	 
+//	reflex move when: the_target!=nil and (state="go_alone"){ //state="go_home" or 
+//		path path_followed <- self goto [target::the_target.location, on::the_graph, return_path:: true];
+//		list<geometry> segments <- path_followed.segments;
+//		if the_target.location = location {
+//			the_target <- nil ;
+//		}
+//	}
+//	
+//	aspect base {
+//		draw triangle(50) color: color border: #black;
+//	}
+//}
