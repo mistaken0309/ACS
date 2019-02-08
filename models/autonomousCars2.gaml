@@ -21,6 +21,11 @@ global{
 	// To avoid situations in which the car gets stuck a few meters away from the destination
 	float tolerated_distance <- 0.0000000000005;
 	
+	float cars_tot_distance_covered<-0.0 ;
+	float people_tot_distance_covered<-0.0;
+	float sys_tot_distance_covered<-0.0 update: people_tot_distance_covered+cars_tot_distance_covered;
+	
+	
 	float step <- 1 #mn;		
 	//Stock the number of times agents reached their goal (their house or work place)
 	//int nbGoalsAchived <- 0;
@@ -134,7 +139,6 @@ global{
 			}
 		}
 		
-		
 		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
 		
 		create building from: shape_file_buildings with:[type::string(read("type")), group::string(read("group"))]; 
@@ -149,13 +153,7 @@ global{
 		list<building> living_buildings<- building where (each.group='residential');
 		list<building> work_buildings <-building where (each.group='industrial');
 		
-
-		
 		create people number: n_people { 
-//			living_space <- 3.0;
-//			tolerance <- 0.1;
-//			lanes_attribute <- "nbLanes";
-//			obstacle_species <- [species(self)]; 
 			speed <- min_speed + rnd (max_speed - min_speed) ;
 			start_work <- rnd (min_work_start,max_work_start, (factor/2));
 			end_work <- rnd (min_work_end,max_work_end, (factor/2));
@@ -183,7 +181,6 @@ global{
 			release_state <- 'resting';
 		}
 		list<list<people>> people_in_range <- (people where ((each.state=actual_state )and each.the_target!=nil) simple_clustering_by_distance 1 )  where (( (length (each)) <=5) and ( (length (each)) >0) ) ;
-//		list<list<people>> people_in_range <- (people where ((each.state='search_lift' )and each.the_target!=nil) simple_clustering_by_distance 1 )  where (( (length (each)) <=5) and ( (length (each)) >3) ) ;
 		if(people_in_range!=[]){
 			write "___________________GROUPS @ " + h+" ("+ current_hour+") DAY "+(g+1)+"___________________";
 			loop one_group over: people_in_range{
@@ -192,13 +189,11 @@ global{
 				loop p over: one_group{
 					p.state<- 'wait_for_lift';
 				}
-//							road overlapping (self)
 				list<point>t_2 <- one_group collect each.location;
 				t_2 <- remove_duplicates(t_2);
 								
 				create cars{
-//					location <- one_of(n where empty(each.stop)).location;
-					location <- (one_of(road)).location;
+					location <- one_of(n where empty(each.stop)).location;
 					give_lift_to<-one_group;
 					p_targets <- t_2; // initialized with passengers current locations;
 					next_people_state<-release_state;
@@ -244,7 +239,6 @@ species n skills: [skill_road_node] {
 		}
 	}
 }
-
 species road skills: [skill_road] { 
 	string oneway;
 	geometry geom_display;
@@ -261,8 +255,6 @@ species building{
 		draw shape color: color border: #black;
 	}
 }
-
-
 species people skills:[moving] control: fsm {
 	rgb color <- #lightblue ;
 	building living_place <- nil ;
@@ -270,6 +262,8 @@ species people skills:[moving] control: fsm {
 	int start_work ;
 	int end_work ;
 	point the_target <- nil ;
+	float dist<-0.0;
+	float dist_covered_alone;
 
 	state resting initial:true{
 		enter{
@@ -316,7 +310,14 @@ species people skills:[moving] control: fsm {
 	reflex move when: the_target!=nil and (state="go_home" or state="go_alone"){
 		path path_followed <- self goto [target::the_target, on::the_graph, return_path:: true];
 		list<geometry> segments <- path_followed.segments;
+		loop seg over:segments{
+			dist <- dist+seg.perimeter;		
+		}
 		if the_target = location {
+			dist_covered_alone<-dist_covered_alone+dist;
+//			sys_tot_distance_covered<-sys_tot_distance_covered+dist;
+			people_tot_distance_covered<-people_tot_distance_covered+dist;
+			dist<-0.0;
 			the_target <- nil ;
 		}
 	}
@@ -336,28 +337,19 @@ species cars skills:[advanced_driving] control:fsm{
 	n the_node;
 	list<n> to_avoid;
 	float dist<-0.0;
+	float total_distance_covered<-0.0;
 	float time_needed<-0.0;
 	float starting_time;
 	float arrived_time;
 	geometry shape <- rectangle(50,100);
 	
 	state moving initial:true{
-//		if the_target=nil{
-//			do chose_next_target;
-//		}
-//		do move;
-//		transition to: stop when: (location distance_to current_target)< tolerated_distance;
 	} 
 	state stop{
 	} 
 	
 	reflex chose_new_target when: the_target=nil and state='moving'{
 		to_avoid<-nil;
-//		if p_targets=[]{
-//			write "h"+current_hour+ " reached all destinations: " +been_to;
-//			do die;
-//		}
-//		remove current_target from: targets;
 		if !empty(give_lift_to){
 			list<point> t <- give_lift_to collect each.location;
 			add all:t to:p_targets;
@@ -368,7 +360,6 @@ species cars skills:[advanced_driving] control:fsm{
 		}
 		p_targets<-remove_duplicates(p_targets);
 		
-//		the_target<-one_of(p_targets);
 		the_target<- first( list(p_targets) sort_by (each distance_to (location)));
 		the_node<- n closest_to the_target;
 		write "\n"+string(self.name)+" h"+current_hour+ " chose new target: " + the_target + " from " +p_targets+ " and the closest node is " + the_node +" current road is "+ current_road;
@@ -418,6 +409,8 @@ species cars skills:[advanced_driving] control:fsm{
 						working_place <- working_place;
 						start_work <- start_work;
 						end_work <- end_work;
+						dist_covered_alone<-dist_covered_alone;
+						dist<-0.0;
 					}
 				}
 			}
@@ -438,6 +431,9 @@ species cars skills:[advanced_driving] control:fsm{
 			arrived_time<-time;
 			final_target<-nil;
 			write string(self.name)+ " h"+current_hour+ " got to destination in "+(arrived_time-starting_time)+". Current road is "+ current_road;
+			total_distance_covered<-total_distance_covered+dist;
+//			sys_tot_distance_covered<-sys_tot_distance_covered+dist;
+			cars_tot_distance_covered<-cars_tot_distance_covered+dist;
 			dist<-0.0;
 			time_needed<-0.0;
 			state<-'stop';
@@ -465,6 +461,8 @@ species cars skills:[advanced_driving] control:fsm{
 						working_place <- working_place;
 						start_work <-start_work;
 						end_work <-end_work;
+						dist_covered_alone<-dist_covered_alone;
+						dist<-0.0;
 					}
 				}
 			}
@@ -508,6 +506,8 @@ species cars skills:[advanced_driving] control:fsm{
 					working_place <- working_place;
 					start_work <- start_work;
 					end_work <- end_work;
+					dist_covered_alone<-dist_covered_alone;
+					dist<-0.0;
 				}
 			}
 		}
@@ -555,6 +555,8 @@ species cars skills:[advanced_driving] control:fsm{
 		int start_work ;
 		int end_work ;
 		point the_target;
+		float dist_covered_alone;
+		float dist;
 		
 		state getting_a_lift{
 		}
@@ -575,94 +577,40 @@ species cars skills:[advanced_driving] control:fsm{
 experiment liftToAndFromWork type: gui {
 	float minimum_cycle_duration <- 0.01;
 	output {
-		display map type: opengl {
+		monitor "Current hour" value: current_hour/factor;
+		monitor "Total distance covered by the system" value: sys_tot_distance_covered/1000;
+		monitor "Total distance covered by cars" value: cars_tot_distance_covered/1000;
+		monitor "Total distance covered by people" value: people_tot_distance_covered/1000;
+//		display my_display {
+//			chart "my_chart" type:pie {
+//				data "car_kilometers" value:(cars_tot_distance_covered/1000) color:#red;
+//				data "people_kilometers" value:(people_tot_distance_covered/1000 ) color:#blue;
+//			}
+//		}
+		display map type: opengl  background:rgb(0,0,15){
 			graphics "world" {
 				draw world.shape.contour;
 			}
-			species road aspect: geom refresh:true;
-			species n aspect: geom3D refresh:true;
-			species building aspect: base refresh:true;
-			species people aspect: base refresh: true ;
-			species cars aspect: realistic refresh: true ;
+			species road aspect: geom transparency: 0.3 refresh:true;
+			species n aspect: geom3D transparency: 0.5 refresh:true;
+			species building aspect: base transparency: 0.2 refresh:true;
+			species people aspect: base transparency: 0.2 refresh: true ;
+			species cars aspect: realistic transparency: 0.5 refresh: true ;
 		}
+//		display chart refresh:every(5 #mn) {
+//			chart "Total distance" type: series {
+//				data "system" value: sys_tot_distance_covered color: #blue;
+////				data "cars" value: cars_tot_distance_covered color: #green;
+////				data "people" value: people_tot_distance_covered color: #red;
+//			}
+//		}
+//		display chart{
+//			chart "Numbers" type: pie{
+//				data "people" value:length(people) color: #lightblue;
+//				data "roads" value:length(road) color: #gray;
+//			}	
+//		}
+
+		
 	}
 }
-
-
-//species people skills:[moving] control: fsm {
-//	rgb color <- #lightblue ;
-//	building living_place <- nil ;
-//	building working_place <- nil ;
-//	int start_work ;
-//	int end_work ;
-//	point the_target <- nil ;
-//
-//	state resting initial:true{
-//		enter{
-//			color <- #lightblue;
-////			write string(self.name) +"setting state to working "+ current_hour + " (" +h+")";
-//		}
-//		transition to: search_lift when: current_hour = start_work-2;
-//	}
-//	state working{
-//		enter{
-//			color <- #blue;
-//		}
-//		transition to: search_lift when: current_hour = end_work;
-//	}
-//	state search_lift{
-//		enter{
-//			if(current_hour = start_work-(factor/2)){
-//				the_target <- working_place.location;
-//				color<- #green;
-//				write string(self.name) +" searching a lift for work @ "+ current_hour + " (" +h+")";
-//			}
-//			if current_hour = end_work{
-//				the_target <- living_place.location;
-//				color<- #cyan;
-//				write string(self.name) +" searching a lift home @ "+ current_hour + " (" +h+")";
-//			}
-//			
-//		}
-//		transition to: go_alone when: (current_hour <= start_work-1) or  (current_hour  = end_work+1);
-//	}
-//	state wait_for_lift{
-////		write string(self.name) +" waiting for lift @ "+ current_hour + " (" +h+")";
-//	}
-//	state go_alone{
-//		enter{
-//			color<-#crimson;
-//			if(current_hour <= start_work){
-//				the_target<-working_place.location;
-//				write string(self.name) +" goint to work alone @ "+ current_hour + " (" +h+")";
-//			}
-//			
-//			if  (current_hour  >= end_work){
-//				the_target<-living_place.location;
-//				write string(self.name) +" goint home alone @ "+ current_hour + " (" +h+")";
-//			}
-//		}
-//		if current_hour >= start_work and self.location = working_place.location{
-//			write self.name + " "+ string(the_target.location = working_place.location and the_target.location=self.location);
-//			state<- 'working';
-////			write string(self.name) +" setting state to working "+ current_hour + " (" +h+")";
-//		}
-//		if self.location = living_place.location{
-//			write self.name + " "+ string(the_target.location = living_place.location and the_target.location=self.location);
-//			state<-'resting';
-////			write string(self.name) +" setting state to resting "+ current_hour + " (" +h+")";
-//		}
-//	}
-//	 
-//	reflex move when: the_target!=nil and (state="go_alone"){ //state="go_home" or 
-//		path path_followed <- self goto [target::the_target.location, on::the_graph, return_path:: true];
-//		list<geometry> segments <- path_followed.segments;
-//		if the_target.location = location {
-//			the_target <- nil ;
-//		}
-//	}
-//	
-//	aspect base {
-//		draw triangle(50) color: color border: #black;
-//	}
-//}
