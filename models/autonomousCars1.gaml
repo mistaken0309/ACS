@@ -5,7 +5,7 @@
 * Tags: Tag1, Tag2, TagN
 ***/
 
-model autonomousCars 
+model autonomousCars1 
 global{
 	
 	file shape_file_roads  <- file("../includes/roads.shp") ;
@@ -19,14 +19,11 @@ global{
 
 	// tolerable distance to current destination in order to give a lift and drop somebody
 	// To avoid situations in which the car gets stuck a few meters away from the destination
-//	float tolerated_distance <- 0.0000000000005;
+	float tolerated_distance <- 0.0000000000005;
 	
-	float cars_tot_distance_covered<-0.0;
+	float cars_tot_distance_covered<-0.0 ;
 	float people_tot_distance_covered<-0.0;
-	float sys_tot_distance_covered<-0.0;
-	float cars_tot_distance_covered_up<-0.0  update:     cars_tot_distance_covered;
-	float people_tot_distance_covered_up<-0.0 update: sum(people collect each.dist_covered_alone);
-	float sys_tot_distance_covered_up<-0.0 update: people_tot_distance_covered_up+cars_tot_distance_covered_up;
+	float sys_tot_distance_covered<-0.0 update: people_tot_distance_covered+cars_tot_distance_covered;
 	
 	
 	float step <- 1 #mn;		
@@ -43,7 +40,7 @@ global{
 	
 
 	//Number of people created
-	int n_people <- 50;
+	int n_people <- 10;
 			
 	//Variables to manage the minimal and maximal time to start working/go home
 	int min_work_start <- (8*factor);
@@ -81,7 +78,8 @@ global{
 			}
 		}
 
-		road_network <-  (as_driving_graph(road, n));
+		general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
+		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
 
 		ask n where (empty(each.roads_out) and empty(each.roads_in)){
 			write string(self.name) + " died";
@@ -141,6 +139,8 @@ global{
 			}
 		}
 		
+		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
+		
 		create building from: shape_file_buildings with:[type::string(read("type")), group::string(read("group"))]; 
 		ask building{
 			if group='residential'{
@@ -165,15 +165,8 @@ global{
 		
 		the_graph <- as_edge_graph(road);
 		int length_graph <- length(the_graph);
-		general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed * each.speed_coeff)));
-		road_network <-  (as_driving_graph(road, n))  with_weights general_speed_map;
+		general_speed_map <- road as_map (each::(each.shape.perimeter / (each.maxspeed)));
 		write "Graph of length: "+ length_graph+ " created";
-	}
-	
-	reflex update_road_speed  {
-		general_speed_map <- road as_map (each::(each.shape.perimeter / ((each.maxspeed)* each.speed_coeff)));
-		road_network <- road_network with_weights general_speed_map;
-		the_graph<- the_graph with_weights general_speed_map;
 	}
 	
 	reflex create_groups  when:( ( ( current_hour >(min_work_start-(factor/2)) ) and ( current_hour < (max_work_start-(factor/4)) ) ) or ( (current_hour >min_work_end) and (current_hour <(max_work_end +(factor/2))) ) ){
@@ -225,7 +218,7 @@ global{
 
 species n skills: [skill_road_node] {
 	bool is_traffic_signal;
-	int time_to_change <- 10;
+	int time_to_change <- 2;
 	int counter <- rnd (time_to_change) ;
 	
 	reflex dynamic when: is_traffic_signal {
@@ -250,15 +243,8 @@ species road skills: [skill_road] {
 	string oneway;
 	geometry geom_display;
 	bool created_on<-false;
-	float capacity <- 1 + shape.perimeter/30;
-	//Number of people on the road
-	int nb_people <- 0 update: length(people at_distance 1);
-	//Speed coefficient computed using the number of people on the road and the capicity of the road
-	float speed_coeff <- 1.0 update:  exp(-nb_people/capacity) min: 0.1;
-	int ov_rgb<-0 update: int((speed_coeff-0.1)*230.0);
 	aspect geom {    
-//		draw geom_display border:  #gray  color: #gray ;
-		draw geom_display border:  #gray  color: rgb(255, ov_rgb, ov_rgb) ;
+		draw geom_display border:  #gray  color: #gray ;
 	}  
 }
 species building{
@@ -278,7 +264,6 @@ species people skills:[moving] control: fsm {
 	point the_target <- nil ;
 	float dist<-0.0;
 	float dist_covered_alone;
-	bool late<-false;
 
 	state resting initial:true{
 		enter{
@@ -290,25 +275,15 @@ species people skills:[moving] control: fsm {
 		enter{
 				the_target <- working_place.location;
 				color<- #green;
-				late<-false;
 		}
 		transition to: go_alone when: current_hour = start_work -(int(factor/4));
 	}
 	state wait_for_lift{
-		if current_hour>start_work and current_hour<end_work{
-			late<-true;
-		}else{
-			late<-false;
-		}
+		
 	}
 	state go_alone{
 		enter{
 				the_target<-working_place.location;
-				if current_hour>start_work{
-					late<-true;
-				} else{
-					late<-false;
-				}
 			}
 		transition to: working when: current_hour >= start_work and self.location = working_place.location;
 	}
@@ -321,8 +296,7 @@ species people skills:[moving] control: fsm {
 	state search_lift_home{
 			enter{
 					the_target <- living_place.location;
-					color<- #cyan;	
-					late<-false;			
+					color<- #cyan;				
 			}
 			transition to: go_home when: current_hour = end_work+(factor/2);
 	}
@@ -334,13 +308,15 @@ species people skills:[moving] control: fsm {
 	}
 	 
 	reflex move when: the_target!=nil and (state="go_home" or state="go_alone"){
-		path path_followed <- self goto [target::the_target, on::the_graph, return_path:: true, move_weights::general_speed_map];
+		path path_followed <- self goto [target::the_target, on::the_graph, return_path:: true];
 		list<geometry> segments <- path_followed.segments;
 		loop seg over:segments{
 			dist <- dist+seg.perimeter;		
 		}
 		if the_target = location {
 			dist_covered_alone<-dist_covered_alone+dist;
+//			sys_tot_distance_covered<-sys_tot_distance_covered+dist;
+			people_tot_distance_covered<-people_tot_distance_covered+dist;
 			dist<-0.0;
 			the_target <- nil ;
 		}
@@ -361,7 +337,7 @@ species cars skills:[advanced_driving] control:fsm{
 	n the_node;
 	list<n> to_avoid;
 	float dist<-0.0;
-	float dist_covered_cars<-0.0;
+	float total_distance_covered<-0.0;
 	float time_needed<-0.0;
 	float starting_time;
 	float arrived_time;
@@ -435,7 +411,6 @@ species cars skills:[advanced_driving] control:fsm{
 						end_work <- end_work;
 						dist_covered_alone<-dist_covered_alone;
 						dist<-0.0;
-						late<-late;
 					}
 				}
 			}
@@ -456,8 +431,8 @@ species cars skills:[advanced_driving] control:fsm{
 			arrived_time<-time;
 			final_target<-nil;
 			write string(self.name)+ " h"+current_hour+ " got to destination in "+(arrived_time-starting_time)+". Current road is "+ current_road;
-			dist_covered_cars<-dist_covered_cars+dist;
-			write string(self.name)+'dist covered till now '+ dist_covered_cars; 
+			total_distance_covered<-total_distance_covered+dist;
+//			sys_tot_distance_covered<-sys_tot_distance_covered+dist;
 			cars_tot_distance_covered<-cars_tot_distance_covered+dist;
 			dist<-0.0;
 			time_needed<-0.0;
@@ -488,7 +463,6 @@ species cars skills:[advanced_driving] control:fsm{
 						end_work <-end_work;
 						dist_covered_alone<-dist_covered_alone;
 						dist<-0.0;
-						late<-late;
 					}
 				}
 			}
@@ -534,7 +508,6 @@ species cars skills:[advanced_driving] control:fsm{
 					end_work <- end_work;
 					dist_covered_alone<-dist_covered_alone;
 					dist<-0.0;
-					late<-late;
 				}
 			}
 		}
@@ -602,55 +575,41 @@ species cars skills:[advanced_driving] control:fsm{
 
 
 experiment liftToAndFromWork type: gui {
-	float minimum_cycle_duration <- 0.001;
+	float minimum_cycle_duration <- 0.01;
 	output {
 		monitor "Current hour" value: current_hour/factor;
-		monitor "Tot distance covered" value: sys_tot_distance_covered_up/1000;
-		monitor "Tot distance cars" value: cars_tot_distance_covered_up/1000;
-		monitor "Tot distance people" value: people_tot_distance_covered_up/1000;
-		monitor "Tot distance people km" value: people_tot_distance_covered_up/1000 ;
+		monitor "Total distance covered by the system" value: sys_tot_distance_covered/1000;
+		monitor "Total distance covered by cars" value: cars_tot_distance_covered/1000;
+		monitor "Total distance covered by people" value: people_tot_distance_covered/1000;
 //		display my_display {
 //			chart "my_chart" type:pie {
-//				data "car_kilometers" value:(cars_tot_distance_covered_up/1000) color:#red;
-//				data "people_kilometers" value:(people_tot_distance_covered_up/1000 ) color:#blue;
+//				data "car_kilometers" value:(cars_tot_distance_covered/1000) color:#red;
+//				data "people_kilometers" value:(people_tot_distance_covered/1000 ) color:#blue;
 //			}
 //		}
-		display map type: opengl{
+		display map type: opengl  background:rgb(0,0,15){
 			graphics "world" {
 				draw world.shape.contour;
 			}
 			species road aspect: geom transparency: 0.3 refresh:true;
 			species n aspect: geom3D transparency: 0.5 refresh:true;
-			species building aspect: base transparency: 0.2 refresh:false;
+			species building aspect: base transparency: 0.2 refresh:true;
 			species people aspect: base transparency: 0.2 refresh: true ;
 			species cars aspect: realistic transparency: 0.5 refresh: true ;
 		}
-//		display series refresh:every(5 #mn) {
+//		display chart refresh:every(5 #mn) {
 //			chart "Total distance" type: series {
-//				data "system" value: sys_tot_distance_covered_up color: #blue;
-//				data "cars" value: cars_tot_distance_covered_up color: #green;
-//				data "people" value: people_tot_distance_covered_up color: #red;
+//				data "system" value: sys_tot_distance_covered color: #blue;
+////				data "cars" value: cars_tot_distance_covered color: #green;
+////				data "people" value: people_tot_distance_covered color: #red;
 //			}
 //		}
-//		display histogram refresh:every(10 #mn) {
-//			chart "Total distance" type: histogram 
-//			x_serie_labels:("cycle"+cycle){
-//				data "system" value: sys_tot_distance_covered_up color: #blue;
-//				data "cars" value: cars_tot_distance_covered_up color: #green;
-//				data "people" value: people_tot_distance_covered_up color: #red;
-//			}
+//		display chart{
+//			chart "Numbers" type: pie{
+//				data "people" value:length(people) color: #lightblue;
+//				data "roads" value:length(road) color: #gray;
+//			}	
 //		}
-		display "data_pie_chart" type: java2D
-		{
-			chart "Nice Ring Pie Chart" type: pie style: ring background: # white color: # lightgreen axes: # yellow title_font: 'Serif' title_font_size: 32.0 title_font_style: 'italic'
-			tick_font: 'Monospaced' tick_font_size: 14 tick_font_style: 'bold' label_font: 'Arial' label_font_size: 32 label_font_style: 'bold' x_label: 'Nice Xlabel' y_label:
-			'Nice Ylabel'
-			{
-				data "people late" value: people count (each.late=true) color: #pink;
-				data "people on time" value: people count(each.late=false) color: #lightgreen;
-			}
-
-		}
 
 		
 	}
