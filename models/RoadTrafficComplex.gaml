@@ -12,15 +12,14 @@ global {
 	geometry shape <- envelope(shape_file_roads) + 50.0;
 	
 	list<geometry> zones<- to_rectangles(shape, {shape.width/4,shape.height/4});
-
 	
 	graph the_graph;  
 	graph road_network;  
 	map road_weights;
 	
-	int nb_people <- 500;
+	int nb_people <- 300;
 	int nb_cars <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5);
-	int nb_car <- 5; //((nb_people mod 5) >0) ? int(nb_people/30) + 1 : int(nb_people/30);
+	int nb_car <- 5; //((nb_people mod 5) >0) ? int(nb_people/10) + 1 : int(nb_people/10);
 	 
 	float step <- 5 #s;	
 
@@ -47,13 +46,13 @@ global {
 	
 	float v_length <- 5.0#m;
 	// distances covered by people and cars in the system, when ensembles are created
-	float cars_tot_distance_cover<-0.0#m  ;
-	float people_tot_distance_cover<-0.0#m  ;
-	float sys_tot_distance_cover<-0.0#m ;
-		
-	float cars_tot_distance_covered<-0.0#m  update:  sum (car collect each.dist_covered_cars) #m;
-	float people_tot_distance_covered<-0.0#m update: sum(people collect each.dist_covered_alone)#m;
-	float sys_tot_distance_covered<-0.0#m update: people_tot_distance_covered#m+cars_tot_distance_covered#m;
+//	float cars_tot_distance_cover<-0.0#m  ;
+//	float people_tot_distance_cover<-0.0#m  ;
+//	float sys_tot_distance_cover<-0.0#m ;
+//		
+//	float cars_tot_distance_covered<-0.0#m  update:  sum (car collect each.dist_covered_cars) #m;
+//	float people_tot_distance_covered<-0.0#m update: sum(people collect each.dist_covered_alone)#m;
+//	float sys_tot_distance_covered<-0.0#m update: people_tot_distance_covered#m+cars_tot_distance_covered#m;
 	
 	//Stock the number of times agents reached their goal (their house or work place)
 	//int nbGoalsAchived <- 0 update count (sum people collect each.n_goal);
@@ -137,7 +136,6 @@ global {
 			right_side_driving <- true;
 			proba_lane_change_up <- 0.1 + (rnd(500) / 500);
 			proba_lane_change_down <- 0.5+ (rnd(500) / 500);
-//			location <- one_of(intersection where empty(each.stop)).location;
 			location <- one_of(road).location;
 			security_distance_coeff <- 5/9 * 3.6 * (1.5 - rnd(1000) / 1000);  
 			proba_respect_priorities <- 1.0 - rnd(200/1000);
@@ -149,9 +147,6 @@ global {
 			threshold_stucked <-int ( (1 + rnd(5))°mn);
 			proba_breakdown <- 0.00001;
 			max_passengers<-5;
-//			give_lift_to<-nil;
-			p_targets <- nil; // initialized with passengers current locations;
-//			next_people_state<-nil;
 		}
 		
 		create cars number: nb_cars { 
@@ -314,6 +309,7 @@ species people skills:[moving] control: fsm {
 	float distance_to_cover;
 	float time_to_cover;
 	float cost_to_cover<-0.0;
+	float cost_proposed<-0.0;
 	bool up_costs<-true;
 	
 	reflex update_costs when: (state contains 'search_lift') and the_target!=nil and up_costs=true{
@@ -438,28 +434,31 @@ species car skills: [advanced_driving] control:fsm{
 	float dist <-0.0;
 	float dist_covered_cars<-0.0;
 	
+	path eventual_path;
 	map<intersection, list<people>> people_destinations;
-	map<intersection, list<string>>people_destinations_for_dropping;
+	list<people> first_group;
+	map<intersection, list<people>> give_lift_to;
+	map<intersection, list<string>> people_destinations_for_dropping;
 	map<intersection, list<float>> people_costs;
-//	map<people, float> cost_for_each;
-	bool first_lift<-true;
+//	map<intersection, float> cost_legs;
+	map<list<intersection>, list<float>> cost_legs;
+	list<intersection> ordered_or_dest;
+	bool added_last;
+	int added_people;
+	int origin_index;
+	int index_dest;
+	bool origin_exists<-false;
+	
+	list<float> costs_passengers<-nil; // list of passengers
 	float mean_of_costs<-0.0;
 	float max_of_costs<-0.0;
 	float min_of_costs<-0.0;
 	
-	list<float> costs_passengers;
-	
-	list<intersection> current_road_nodes;
-//	float lookup_distance<- 100.0;
-	
 	int max_passengers<-5;
-	int passengers_on <-0 update: length(passenger) min:0;
+	list<intersection> current_road_nodes;
 	
-	list<point> been_to<-nil;
-	list<point> p_targets <- nil;
 	list<intersection> int_targets <- nil;
-	list<point> target_locations<-nil; 
-	list<intersection> to_avoid<-nil;
+	list<intersection> int_origins <- nil;
 	
 	float arrived_time<-0.0;
 	float starting_time<-0.0;
@@ -469,7 +468,9 @@ species car skills: [advanced_driving] control:fsm{
 	list<people> people_near <- 
 				(length(passenger) < max_passengers and current_road_nodes=nil and state!='real_stop') ? nil : (people where ((each.state contains 'search_lift') and each.close_intersections contains_any self.current_road_nodes))
 				update: (length(passenger) < max_passengers and current_road_nodes=nil and state!='real_stop') ? nil : (people where ((each.state contains 'search_lift') and each.close_intersections contains_any self.current_road_nodes)); 
-
+	
+	
+	
 	state wander initial: true{}
 	state moving{} 
 	state stop{}
@@ -515,7 +516,7 @@ species car skills: [advanced_driving] control:fsm{
 		write "\n"+self.name + ' changing state to real_stop';
 		state<-'real_stop';
 		
-		path eventual_path<-nil;
+		eventual_path<-nil;
 		intersection origin<- current_road_nodes[1];
 		
 		possible_pass<- people_near;
@@ -534,23 +535,12 @@ species car skills: [advanced_driving] control:fsm{
 				remove first_p from: possible_pass; //add first_p to: checked;
 			}
 			if eventual_path.edges=[]{
-				state<-'wander';
 				write self.name + "Couldn't get anybody, going back to wandering";
 				self.location<- current_road_nodes[1].location;
-				state<- 'wander';
-				first_lift<-true;
-				first_p<-nil;
-				possible_pass<-nil;
-				people_near<-nil;
-				people_destinations_for_dropping<-nil;
-				costs_passengers<-nil;
-				mean_of_costs<-0.0;
-				min_of_costs<-0.0;
-				max_of_costs<-0.0;
+				do reset_vars_for_wander;
 			}
 		}	
 	}
-	
 	reflex check_other_cars_first_p when: first_p!=nil and state='real_stop'{
 		ask (car-self) where (each.state='real_stop' and each.first_p=first_p){
 			if self.possible_pass=myself.possible_pass{
@@ -569,10 +559,9 @@ species car skills: [advanced_driving] control:fsm{
 				}
 			}
 		}
-	}
-	
+	}	
 	reflex change_first_passenger when: first_p=nil and state='real_stop'{
-		path eventual_path;
+		eventual_path<-nil;
 		intersection first_p_target_inter;
 		
 		if eventual_path=nil{
@@ -589,59 +578,68 @@ species car skills: [advanced_driving] control:fsm{
 				state<-'wander';
 				write "Couldn't get anybody, going back to wandering";
 				self.location<- current_road_nodes[1].location;
-				state<- 'wander';
-				first_lift<-true;
-				first_p<-nil;
-				possible_pass<-nil;
-				people_near<-nil;
-				people_destinations_for_dropping<-nil;
-				costs_passengers<-nil;
-				mean_of_costs<-0.0;
-				min_of_costs<-0.0;
-				max_of_costs<-0.0;
+				do reset_vars_for_wander;
 			}
 		}
 	}
 	
-//	reflex get_people_on_road when: !empty(people_near) and length(passenger) < max_passengers and state!='wander'{
-//		state<-'real_stop';
-//		list<people> possible_additions<-nil; 
-//		list<people> removed_p<-nil;
-//		list<people> tmp<-nil;
-//		
-//		loop p over:possible_additions{
-//			if angle_between(last(int_targets).location, location, (intersection closest_to the_target).location)>20.0{ // 1st passenger destination, 1st passenger origin, p destination
-//				add p to: removed_p;
-//			} else {
-//				intersection cl_int <- (intersection closest_to p.the_target);
-//				tmp<-nil;
-//				if (people_destinations.keys contains cl_int){
-//					if people_destinations_for_dropping contains cl_int{
-//						add p.name to: people_destinations_for_dropping[cl_int];
-//						ask p {
-//							got_lift<- true;
-//							cost_to_cover<- myself.people_costs[cl_int][2];
-//						}
-//						write self.name + " adding "+ p.name+ " to passengers captured";
-//						capture p as: passenger{
-//						}
-//					}
-////					tmp <- people_destinations[cl_int];
-//				}
-//				
-////				add p to: tmp;
-////				add cl_int::tmp to: people_destinations;
-//			}	
-//		}
-//		remove removed_p from: possible_additions;
-//	}
+	action reset_vars_for_wander{
+		self.location<- current_road_nodes[1].location;
+		state<- 'wander';
+		first_p<-nil;
+		first_group<-nil;
+		possible_pass<-nil;
+		people_near<-nil;
+		people_destinations<-nil;
+		people_destinations_for_dropping<-nil;
+		costs_passengers<-nil;
+		cost_legs<-nil;
+		int_targets<-nil;
+		ordered_or_dest<-nil;
+		mean_of_costs<-0.0;
+		min_of_costs<-0.0;
+		max_of_costs<-0.0;
+	}
 	
-	reflex create_path when: !empty(possible_pass+first_p) and state='real_stop' and first_p!=nil{ //and first_lift 
-		intersection d<- current_road_nodes[1];
+	action remove_due_to_direction{
+		list removed_p;
+		loop p over: (possible_pass){ // remove passengers that want to go towards a place in a complete different direction
+			if !dead(p){
+				if angle_between(last(int_targets).location, first(int_targets).location, p.the_target)>20.0{ // 1st passenger destination, 1st passenger origin, p destination
+					add p to: removed_p;
+				} else {
+					intersection cl_int <- (intersection closest_to p.the_target);
+					if (people_destinations.keys contains cl_int){
+						add p to:people_destinations[cl_int];
+					} else{
+						add cl_int::[p] to: people_destinations;
+					}
+				}
+			} else{
+				add p to: removed_p;
+			}
+			
+		}
+		if !empty(removed_p){
+			remove all: removed_p from: possible_pass;
+		}
+				
+		// check in order to avoid to compute the current path again for other passengers that go to the same location;		
+		if people_destinations.keys contains last(int_targets){
+			first_group<- people_destinations[last(int_targets)] + first_p;
+			remove people_destinations[last(int_targets)] from: possible_pass; // are already going to be captured;
+			remove key: last(int_targets) from: people_destinations;
+		}
+	}
+	
+	
+	reflex create_path when: !empty(possible_pass+first_p) and state='real_stop' and first_p!=nil{ 
+		intersection origin<- current_road_nodes[1];
+		first_group <- [first_p];
 		
 		intersection first_p_target_inter <- (intersection closest_to first_p.the_target);
-		path eventual_path;
-		eventual_path <- road_network path_between (d,first_p_target_inter);
+		
+		eventual_path <- road_network path_between (origin,first_p_target_inter);
 		float time_for_eventual_path<-0.0;
 		loop e over: (eventual_path.edges){
 			time_for_eventual_path <- time_for_eventual_path + (road(e).shape.perimeter / road(e).maxspeed);
@@ -650,42 +648,19 @@ species car skills: [advanced_driving] control:fsm{
 		write self.name + " First passenger "+ first_p.name + " ("+ first_p +") " +" has objective "+ first_p.the_target +" and the nearest "+ first_p_target_inter.name;
 		write  self.name + " other possible pass : "+ possible_pass + "\n";
 		
-		add d to: int_targets; // formally add starting point
+		add origin to: int_targets; // formally add starting point
+		add origin to: int_origins;
 		add first_p_target_inter to: int_targets; // formally add ending point
 		write self.name + " - " +int_targets;
 		
-		list<people> tmp;		
-		list removed_p;
-		loop p over: (possible_pass){ // remove passengers that want to go towards a place in a complete different direction
-			if angle_between(first_p_target_inter.location, d.location, p.the_target)>20.0{ // 1st passenger destination, 1st passenger origin, p destination
-				add p to: removed_p;
-			} else {
-				intersection cl_int <- (intersection closest_to p.the_target);
-				tmp<-nil;
-				if (people_destinations.keys contains cl_int){
-					tmp <- people_destinations[cl_int];
-				}
-				add p to: tmp;
-				add cl_int::tmp to: people_destinations;
-//				write "\t"+self.name + " adding "+ p.name + " " + cl_int.name + " = " + p.the_target;
-			}
-		}
-		if !empty(removed_p){
-			remove all: removed_p from: possible_pass;
-		}
+		do remove_due_to_direction;
 				
-		// check in order to avoid to compute the current path again for other passengers that go to the same location;		
-		if people_destinations.keys contains first_p_target_inter{
-			remove people_destinations[first_p_target_inter] from: possible_pass;
-		}
-		
 		if !empty(possible_pass){
 			int i<-0;
 			float length_ev_path;
-			write self.name + " - " + people_destinations +" - "+ int_targets;
+			write self.name + " \t" + people_destinations +" - "+ int_targets;
 			
 			if length(people_destinations.keys)>0{
-				
 				length_ev_path <- eventual_path.shape.perimeter;
 				
 				loop dest over: (people_destinations.keys){
@@ -693,15 +668,13 @@ species car skills: [advanced_driving] control:fsm{
 					path deviation2 <- nil;
 					float length_dev;
 					
-					write self.name+ " from: "+ int_targets[i]+" to: "+ dest+ " to: "+ last(int_targets);
+//					write self.name+ " from: "+ int_targets[i]+" to: "+ dest+ " to: "+ last(int_targets);
 					deviation1 <- road_network path_between (int_targets[i], dest) ;
 					deviation2 <- road_network path_between (dest, last(int_targets));
 					
 					if (deviation1.edges!=[]) and (deviation2.edges!=[]){
 						length_dev <- deviation1.shape.perimeter + deviation2.shape.perimeter ;
-//						write self.name + " the deviation legs exist, and the deviation has length of: " + length_dev + ' vs ' +length_ev_path;
-					}else{	
-//						write self.name + (deviation1.edges=[] ? "dev1 empty" : "dev2 empty");
+					}else{
 						length_dev <- length_ev_path + (length_ev_path/3) ;
 					}
 					
@@ -721,7 +694,7 @@ species car skills: [advanced_driving] control:fsm{
 						i<-i+1;
 					} else{
 						remove all:people_destinations[dest] from: possible_pass;
-						write self.name+ " remaining possible passengers: "+ possible_pass +"\n";
+//						write self.name+ " remaining possible passengers: "+ possible_pass +"\n";
 						remove key:dest from: people_destinations;
 					}
 					
@@ -730,122 +703,101 @@ species car skills: [advanced_driving] control:fsm{
 			}
 		}
 		
-		add first_p to: possible_pass;
+		add all:first_group to: possible_pass;
 		write self.name+ " final possible passengers: "+ possible_pass;
-		tmp<-nil;
 		
-		if people_destinations.keys contains first_p_target_inter{
-			tmp<- people_destinations[first_p_target_inter];
-			write self.name + " Changing order of people_destinations (before): "+ people_destinations;
-			remove key:first_p_target_inter from: people_destinations;
-			write self.name + " Changing order of people_destinations (after): "+ people_destinations;
-		}
-		
-		add first_p to: tmp; 
-		add first_p_target_inter::tmp to:people_destinations;
+		add origin::possible_pass to: give_lift_to;
+		add first_p_target_inter::first_group to:people_destinations;
 		
 		if length(possible_pass)>5{
 			write self.name+ " got more passenger than should have";
 		}
+//		write self.name + " int_targets(final): "+int_targets+ " | people_destinations(final): "+people_destinations;
 		
 		if !empty(possible_pass){
-//			do compute_costs_and_negotiate;	
-			
+			people_destinations_for_dropping<-nil;			
 			costs_passengers<-nil;
 			int i <- 0;
 			
+			float sum_time_leg <- 0.0;
+			float sum_distance_leg <- 0.0;
+			float sum_cost_leg <- 0.0;
+			int leg_passengers <- length(possible_pass);
 			loop dest over: (int_targets-first(int_targets)){
 				float time_leg <- 0.0;
 				float distance_leg <- 0.0;
 				float cost_leg <- 0.0;
-				int leg_passengers <- length(possible_pass);
+				
+				
 					
 				path leg_path <- road_network path_between (int_targets[i], dest);
-				write self.name + "path between "+ int_targets[i] + " to "+ dest +" "+leg_path;
+//				write self.name + " path between "+ int_targets[i] + " to "+ dest +" "+leg_path;
 				distance_leg <- leg_path.shape.perimeter;
 					
-				loop e over: leg_path.edges{
-					time_leg <- time_leg + (road(e).shape.perimeter / road(e).maxspeed);
+				loop e over: list<road>(leg_path.edges){
+					time_leg <- time_leg + (e.shape.perimeter / e.maxspeed);
 				}
 	
 				cost_leg <- ((distance_leg/1000) * cost_km)/leg_passengers;
 				if i>0{
-					time_leg <- time_leg + people_costs[int_targets[i]][0];
-					distance_leg <- distance_leg + people_costs[int_targets[i]][1];
-					cost_leg <- ((distance_leg/1000 * cost_km)/leg_passengers) + people_costs[int_targets[i]][2];
+					sum_time_leg <- time_leg + people_costs[int_targets[i]][0];
+					sum_distance_leg <- distance_leg + people_costs[int_targets[i]][1];
+					sum_cost_leg <- ((distance_leg/1000 * cost_km)/leg_passengers) + people_costs[int_targets[i]][2];
 				}
 					
-				list<float> costs <- [time_leg, distance_leg, cost_leg];
-				add dest:: costs to: people_costs;
-					
+				list<float> costs <- [sum_time_leg, sum_distance_leg, sum_cost_leg];
+				add dest::costs to: people_costs;
+				
+				add [(int_targets[i]), dest]::[((distance_leg/1000) * cost_km),leg_passengers]  to: cost_legs;
+				
+				list<string> names<- nil;	
 				loop p over: people_destinations[dest]{
 					ask p{
 						got_lift<-true;
-						cost_to_cover<-cost_leg;
+						cost_proposed<-sum_cost_leg;
 					}
-					write self.name + " LIFT FOR "+ p.name + " "+p.got_lift+" "+p.cost_to_cover + " "+cost_leg;
+//					write self.name + " LIFT FOR "+ p.name + " "+p.got_lift+" "+p.cost_to_cover + " "+cost_leg;
+					add p.name to: names;
 				}
-					
-				list<string> names<- people_destinations[dest] collect each.name;
+				
 				add dest::names to:people_destinations_for_dropping;
 				
-				loop times: length(names){
-					add cost_leg to: costs_passengers;
+				loop times:length(names){
+					add sum_cost_leg to: costs_passengers;
 				}
 				
 				leg_passengers<- leg_passengers - length(people_destinations[dest]);
 				i<-i+1;
 			}
+			add all:int_targets to: ordered_or_dest;
 			
 			mean_of_costs <- mean(costs_passengers);
 			min_of_costs<- min(costs_passengers);
 			max_of_costs<- max(costs_passengers); 
-			
-			capture possible_pass as:passenger{
-				name<-p.name;
-				state<- state;
-				next_state<- next_state;
-				color <- nil ;
-				the_target<-p.the_target;
-				living_place <- p.living_place ;
-				working_place <- p.working_place;
-				start_work <-p.start_work;
-				end_work <-p.end_work;
-				dist_covered_alone<-p.dist_covered_alone;
-				dist<-0.0;
-				late<-p.late;
+			write self.name + " notifying other cars that I've taken: " + possible_pass collect each.name;
+			ask car-self{
+				remove all: possible_pass from: self.possible_pass;
 			}
-//			remove d from: int_targets;
-			write self.name + ' final destinations: '+people_destinations.keys+ "\n\n";
-			self.location<- d.location;
+			capture possible_pass as:passenger{
+			}
+			
+			write self.name + ' final destinations: '+people_destinations.keys+ " | final ordered_or_dest: " + ordered_or_dest;
+			write self.name + ' initial costs per leg: '+ cost_legs; 
+			
+			self.location<- origin.location;
+//			do search_other_passengers;
 			state<-'moving';
-			first_lift <- false;
+			possible_pass<-nil;
 			final_target <- nil;
 			the_target <- nil;
 			current_path <- nil;
 			people_near<-nil;
 		} else{
 			write self.name + " Couldn't get anybody, going back to wandering";
-			people_destinations_for_dropping<-nil;
-			costs_passengers<-nil;
-			mean_of_costs<-0.0;
-			min_of_costs<-0.0;
-			max_of_costs<-0.0;
-			state<- 'wander';
-			first_lift<-true;
+			do reset_vars_for_wander;
 		}
-		first_p<-nil;
-		possible_pass<-nil;
-		people_destinations<-nil;
-//		write "\n";
 	}
 	
-	action compute_costs_and_negotiate{
-		people_destinations_for_dropping<-nil;
-		costs_passengers<-nil;
-		
-	}
-
 	action chose_new_target{
 		the_target<- first(int_targets-first(int_targets));
 	}
@@ -859,13 +811,12 @@ species car skills: [advanced_driving] control:fsm{
 		current_path <- compute_path(graph: road_network, target: the_target );
 		
 		if current_path!=nil{
-			to_avoid<-nil;
 			list<road> roads_in_path <- list<road>(current_path.edges);
 			loop r over:roads_in_path{
 				dist <- dist+r.shape.perimeter;
 				time_needed<- (time_needed + (r.shape.perimeter/r.maxspeed));
 			}
-			write string(self.name)+" h"+current_hour + " from "+ intersection overlapping self.location+" to "+ the_target+" Estimated time to cover " + dist+" is " +time_needed + " seconds";
+			write string(self.name)+" h"+current_hour + " from "+ intersection overlapping self.location +" to "+ the_target+" Estimated time to cover " + dist+" is " +time_needed + " seconds";
 			starting_time<- time;
 		}
 	}
@@ -891,6 +842,377 @@ species car skills: [advanced_driving] control:fsm{
 			time_needed<-0.0;
 			if state='moving'{state<-'stop';}
 		}		
+	}
+	
+	action update_costs{
+		int difference_in_dest_or <- (index_dest - origin_index)-1;
+		write self.name + " origin_index: " + origin_index + " index_dest: " + index_dest + " targets in between: " + difference_in_dest_or;
+		int stop_at;
+		
+		int i<-0;
+		bool take_existing<-false;
+		map<list<intersection>, list<float>> tmp <- cost_legs;
+		cost_legs<-nil;
+		write self.name + " " + tmp.keys + " length: "+ length(tmp.keys);
+		loop key over: tmp.keys{
+			write self.name + " VALUE OF I: " + i;
+			if i<origin_index-1{
+				write self.name + " i:"+ i+ " before origin_index | copying " + key +"::" + tmp[key] +" to: cost_legs";
+				add key::tmp[key] to: cost_legs;
+			}
+			if (origin_index>0 and i=origin_index-1) or (origin_index=0 and i=0){
+				if key[1] = ordered_or_dest[origin_index] and origin_index!=0{
+					write self.name + " i:"+ i+ " origin already interted | copying " + key +"::" + tmp[key] +" to: cost_legs";
+					add key::tmp[key] to: cost_legs;
+					if difference_in_dest_or = 0{
+						write self.name + " the destination is right after the origin " + origin_index + " " + index_dest + " " + key[0] + " " + key[1];
+						write self.name + " leg2 - from: " + ordered_or_dest[origin_index] + " to: " +ordered_or_dest[index_dest] + " " + tmp[key][1] + " "+added_people;
+						write self.name + " leg3 - from: " + ordered_or_dest[index_dest] + " to: " + key[1] + " "+ tmp[key][1];
+						path leg2 <- road_network path_between (ordered_or_dest[origin_index], ordered_or_dest[index_dest]);
+						int people_on_leg2 <- int(tmp[key][1]+added_people);
+						float cost2 <- ((leg2.shape.perimeter/1000)*cost_km) / people_on_leg2;
+						add [ordered_or_dest[origin_index], ordered_or_dest[index_dest]]::[cost2, people_on_leg2] to: cost_legs;
+						
+						path leg3 <- road_network path_between (ordered_or_dest[index_dest], key[1]);
+						int people_on_leg3 <- int(tmp[key][1]);
+						float cost3 <- ((leg3.shape.perimeter/1000)*cost_km) / people_on_leg3;
+						add [ordered_or_dest[index_dest], key[1]]::[cost3, people_on_leg3] to: cost_legs;
+					}
+				} else{
+					if origin_index!=0{
+						write self.name + " " + i +" origin_index!=0 / i=origin_index-1 | leg1 - from: " + key[0] + " to: " + ordered_or_dest[origin_index] + " " + key[0] + " " + key[1] + " " + tmp[key][1] + " " + added_people;
+						path leg1 <- road_network path_between (key[0], ordered_or_dest[origin_index]);
+						int people_on_leg1 <- int(tmp[key][1]);
+						float cost1 <- ((leg1.shape.perimeter/1000)*cost_km) / people_on_leg1;
+						add [key[0], ordered_or_dest[origin_index]]::[cost1, people_on_leg1] to: cost_legs;
+					}
+					if difference_in_dest_or = 0{
+						write self.name + " the destination is right after the origin " + origin_index + " " + index_dest + " " + key[0] + " " + key[1];
+						write self.name + " leg2 - from: " + ordered_or_dest[origin_index] + " to: " +ordered_or_dest[index_dest] + " " + tmp[key][1] + " "+added_people;
+						write self.name + " leg3 - from: " + ordered_or_dest[index_dest] + " to: " + key[1] + " "+ tmp[key][1];
+						path leg2 <- road_network path_between (ordered_or_dest[origin_index], ordered_or_dest[index_dest]);
+						int people_on_leg2 <- int(tmp[key][1]+added_people);
+						float cost2 <- ((leg2.shape.perimeter/1000)*cost_km) / people_on_leg2;
+						add [ordered_or_dest[origin_index], ordered_or_dest[index_dest]]::[cost2, people_on_leg2] to: cost_legs;
+						
+						path leg3 <- road_network path_between (ordered_or_dest[index_dest], key[1]);
+						int people_on_leg3 <- int(tmp[key][1]);
+						float cost3 <- ((leg3.shape.perimeter/1000)*cost_km) / people_on_leg3;
+						add [ordered_or_dest[index_dest], key[1]]::[cost3, people_on_leg3] to: cost_legs;
+						
+					}else {
+						write self.name + " the destination is NOT right after the origin "+ origin_index + " " + index_dest + " "  + key[0] + " " + key[1] + " " + tmp[key][1] + " " + added_people;
+						write self.name + " leg2 - from: " + ordered_or_dest[origin_index] + " to: " + key[1]+ " "+ tmp[key][1] + "+" + added_people;
+						path leg2 <- road_network path_between (ordered_or_dest[origin_index], key[1]);
+						int people_on_leg2 <- int(tmp[key][1]+added_people);
+						float cost2 <- ((leg2.shape.perimeter/1000)*cost_km) / people_on_leg2;
+						add [ordered_or_dest[origin_index], key[1]]::[cost2, people_on_leg2] to: cost_legs;
+					}
+				}
+			}
+			if !added_last and ((origin_exists and i>=origin_index and i<index_dest-1  and difference_in_dest_or>0)
+				or (!origin_exists and i>=origin_index and i<index_dest-2 and origin_index>0 )){
+				write self.name + " origin_exist: " + origin_exists + " index_dest-1: " + (index_dest-1) + " index_dest-2: " + (index_dest-2) + " "  + difference_in_dest_or; 
+				write self.name + " i:"+ i+ " after origin and before dest | copying " + key +"::" + tmp[key][0] + " " + tmp[key][1]  + "+" + added_people+" with added_people to: cost_legs";
+				add key::[tmp[key][0], tmp[key][1]+ added_people] to: cost_legs;
+			}
+			if !added_last and ((origin_exists and i = index_dest-1 and i>=origin_index and difference_in_dest_or>0)
+				or (!origin_exists and i = index_dest-2 and i>=origin_index and origin_index>0)){
+					if key[1]= ordered_or_dest[index_dest]{
+						write self.name + " i:"+ i+ " destination already interted | copying " + key +"::" + tmp[key][0] + " " + tmp[key][1] +"+" +added_people +" to: cost_legs";
+						add key::[tmp[key][0], tmp[key][1]+ added_people] to: cost_legs;
+					} else{
+						write self.name + " leg1 - from: " + key[0] + " to: " +ordered_or_dest[index_dest] + " " + tmp[key][1] + " "+added_people;
+						write self.name + " leg2 - from: " + ordered_or_dest[index_dest] + " to: " + key[1] + " "+ tmp[key][1];
+						path leg1 <- road_network path_between (key[0], ordered_or_dest[index_dest]);
+						int people_on_leg1 <- int(tmp[key][1]+added_people);
+						float cost1 <- ((leg1.shape.perimeter/1000)*cost_km) / people_on_leg1;
+						add [key[0], ordered_or_dest[index_dest]]::[cost1, people_on_leg1] to: cost_legs;
+						
+						path leg2 <- road_network path_between (ordered_or_dest[index_dest], key[1]);
+						int people_on_leg2 <- int(tmp[key][1]);
+						float cost2 <- ((leg2.shape.perimeter/1000)*cost_km) / people_on_leg2;
+						add [ordered_or_dest[index_dest], key[1]]::[cost2, people_on_leg2] to: cost_legs;
+					}
+			}
+			write self.name + " added_last: "+ added_last + " origin_exists "+ origin_exists + " index_dest-1 " + (index_dest-1) + " index_dest-2 " + (index_dest-2) + " origin_index " + origin_index; 
+			if !added_last and (
+				(origin_exists and i >= index_dest and difference_in_dest_or >0)
+				or (origin_exists and i >= index_dest-1 and difference_in_dest_or =0)
+				or (!origin_exists and i >= index_dest-1) ){
+				write self.name + " i:"+ i+ " after dest | copying " + key +"::" + tmp[key] +" to: cost_legs";
+				add key::tmp[key] to: cost_legs;
+			}
+			if added_last and i>=origin_index{
+				write self.name + " i:"+ i+ " after origin and added_last | copying " + key +"::" + tmp[key][0] + " " + tmp[key][1]  + "+" + added_people+" with added_people to: cost_legs";
+				add key::[tmp[key][0], tmp[key][1]+ added_people] to: cost_legs;
+			}
+			
+			i<-i+1;
+		}
+		if added_last{
+			intersection key0 <- ordered_or_dest[length(ordered_or_dest)-2];
+			intersection key1 <- last(ordered_or_dest);
+			write self.name + ' adding as last. From '+ key0 +' to ' + key1;
+			path leg1 <- road_network path_between (key0, key1);
+			int people_on_leg1 <- added_people;
+			float cost1 <- ((leg1.shape.perimeter/1000)*cost_km) / people_on_leg1;
+			add [key0, key1]::[cost1, people_on_leg1] to: cost_legs;
+			added_last<-false;
+			write self.name + " " + cost_legs;
+		}
+		
+	}
+	
+//	action update_costs_existing{
+//		int difference_in_dest_or <- (index_dest - origin_index)-1;
+//		write self.name + " modifying when already exiting | origin_index: " + origin_index + " index_dest: " + index_dest + " targets in between: " + difference_in_dest_or;
+//		int stop_at;
+//		
+//		int i<-0;
+//		bool take_existing<-false;
+//		loop key over: cost_legs.keys{
+//			if i>=origin_index and i<index_dest{
+//				write self.name + " " + key + " original:" + cost_legs[key] + " after change: "+ cost_legs[key][1]+added_people;
+//				cost_legs[key][1]<- cost_legs[key][1]+added_people;
+//			}
+//			if i=index_dest{ break; }
+//			i<-i+1;
+//		}
+//		write self.name + " updated (existing) cost_legs: " + cost_legs;
+//	}
+	
+	reflex add_on_road when: !empty(people_near) and (state='moving') and length(passenger)< max_passengers{ //state!='wander' or state!='real_stop' or state!='stop'
+		state<-'real_stop';
+//		write self.name + " changing to real_stop on the road to add passengers";
+		possible_pass<-people_near;
+		do remove_due_to_direction;
+//		write self.name + " remove passengers due to direction";
+		if !empty(possible_pass){
+			write self.name + " there are passengers on the " + current_road_nodes[1];
+			map<intersection, list<people>> people_on_road <- possible_pass group_by (intersection closest_to each.the_target);
+			write self.name + " initial people_on_road: "+ people_on_road;
+			
+			if people_on_road.keys contains int_targets[0]{
+				remove key: int_targets[0] from: people_on_road;
+				write self.name + " removed key: " + int_targets[0];
+			}
+			int total_added_people<-0;
+
+			origin_exists<-false;
+//			if !(ordered_or_dest contains current_road_nodes[1]){
+				int inted <- ((ordered_or_dest index_of the_target));
+				origin_index<- inted-1;
+				if ordered_or_dest[inted-1]!=current_road_nodes[1]{
+					add current_road_nodes[1] at:inted to: ordered_or_dest;
+					write self.name + ' added '+ current_road_nodes[1] + '(new origin) at: ' + inted + ' to:'+ ordered_or_dest;
+					origin_index <- inted;
+				} else{
+					origin_exists<-true;
+				}
+//			}
+			
+//			if length(passenger)>= max_passengers{
+			loop dest over: people_on_road.keys{
+				path target_to_dest ;
+				path target_to_next ;
+				bool added<- false;
+				int i<-1;
+				int index_max <- length(int_targets)-1;
+				added_people<-0;
+				if max_passengers > length(passenger){
+					if int_targets contains dest{
+						origin_exists<-true;
+						index_dest<- ordered_or_dest index_of dest;
+						if people_destinations_for_dropping.keys contains dest{ 
+							add all:(people_on_road[dest] collect each.name) to: people_destinations_for_dropping[dest];
+							write self.name +" dest: "+ dest+ " was already in for_dropping "+ people_destinations_for_dropping[dest];
+						} 
+						
+						added_people<- length(people_on_road[dest])+ added_people;
+						total_added_people  <- total_added_people + added_people;
+													  
+						write self.name + " capturing " + people_on_road[dest] collect each.name + " that have as target already in int_targets: " + dest;
+						write self.name + " " + int_targets + " " + ordered_or_dest + " " + people_destinations_for_dropping;
+						write self.name + " updating costs ";
+						
+//						do update_costs_existing;
+						do update_costs;
+						bool next_too<-false;
+	
+						float cost<-0.0;
+						loop key over: cost_legs.keys{
+							if key[0]=current_road_nodes[1]{
+								next_too<-true;
+								cost <-  cost + (cost_legs[key][0]/cost_legs[key][1]);
+							}
+							if next_too{
+								cost <- cost + (cost_legs[key][0]/cost_legs[key][1]);
+								if key[1]=dest{break;}
+							}
+						}
+						ask people_on_road[dest]{
+							cost_proposed <- cost;
+							got_lift<-true;
+						}
+	
+						
+						capture people_on_road[dest] as: passenger{}
+						write self.name + " first passenger that got on from remaining " + first(list(passenger)) + " (" +first(list(passenger)).name + ")";
+						added<-true;
+						
+					} else{				
+						loop while: added=false{
+							if i=1{
+								write self.name + " index: "+ i + " index_max: "+ index_max;
+								write self.name + " origin: "+ location + " destination: "+ dest;
+								write self.name + " origin: "+ location + " next target: "+ int_targets[i]; 
+								target_to_dest <- road_network path_between(location, dest);
+								target_to_next <- road_network path_between(location, int_targets[1]);
+							}else if i< index_max{
+								write self.name + " index: "+ i + " index_max: "+ index_max;
+								write self.name + " origin: "+ int_targets[i-1] + " destination: "+ dest;
+								write self.name + " origin: "+ int_targets[i-1] + " next target: "+ int_targets[i]; 
+								target_to_dest <- road_network path_between(int_targets[i-1], dest);
+								target_to_next <- road_network path_between(int_targets[i-1], int_targets[i]);
+							}
+		
+							if target_to_dest.edges!=[] and i<=index_max{
+								if target_to_dest.shape.perimeter < target_to_next.shape.perimeter{
+									write self.name + " dest: "+ dest + " next_target: "+ int_targets[i];
+									path dest_to_target <- road_network path_between (dest, int_targets[i]);
+									if dest_to_target.edges!=[]{
+										origin_exists<-true;
+										if !((int_targets-int_targets[0]) contains dest){
+											index_dest<- ordered_or_dest index_of int_targets[i];
+											write self.name + " index_dest "+ index_dest + "= index of "+ int_targets[i] + " " + int_targets + " in ordered_or_dest: " + ordered_or_dest; 
+											add dest at:(index_dest) to: ordered_or_dest; 
+											add dest at:i to: int_targets;
+										}
+										if people_destinations_for_dropping contains dest{
+											add all:(people_on_road[dest] collect each.name) to: people_destinations_for_dropping[dest];
+											write self.name +" dest: "+ dest+ " was already in for_dropping "+ people_destinations_for_dropping[dest];
+										}else{
+											add dest::(people_on_road[dest] collect each.name) to:people_destinations_for_dropping;
+										} 
+		
+										write self.name + " " + int_targets + " " + ordered_or_dest + " " + people_destinations_for_dropping;
+										write self.name + " capturing " + people_on_road[dest] collect each.name + " that have as target: " + dest;
+										write self.name + " recomputing costs";
+										added_people<- length(people_on_road[dest])+ added_people;
+										total_added_people  <- total_added_people + added_people;
+										
+										do update_costs;
+										bool next_too<-false;
+
+										
+										
+										float cost<-0.0;
+										loop key over: cost_legs.keys{
+											if key[0]=current_road_nodes[1]{
+												next_too<-true;
+												cost <-  cost + (cost_legs[key][0]/cost_legs[key][1]);
+											}
+											if next_too{
+												cost <- cost + (cost_legs[key][0]/cost_legs[key][1]);
+												if key[1]=dest{
+													break;
+												}
+											}
+										}
+										ask people_on_road[dest]{
+											cost_proposed<- cost;
+											got_lift<-true;
+										}
+										capture people_on_road[dest] as: passenger{}						
+										
+										if i=1{
+											the_target<-nil;
+											final_target<-nil;
+											current_target<-nil;	
+										}
+										added<-true;
+										write self.name + " first passenger that got on from remaining " + first(list(passenger)) + " (" +first(list(passenger)).name + ")";
+										
+									}
+								}
+							}
+							
+							if i=index_max and !added{
+								write self.name + " index: "+ i + " index_max: "+ index_max;
+								write self.name + " origin (last): "+ last(int_targets) + " destination: "+ dest;
+								target_to_dest <- road_network path_between(last(int_targets), dest);
+								if target_to_dest.edges!=[]{
+									if !((int_targets-int_targets[0]) contains dest){
+										index_dest<- length(ordered_or_dest);
+										write self.name + " index_dest "+ index_dest + "= new index of "+ ordered_or_dest;
+										add dest to: int_targets;
+										add dest to: ordered_or_dest;
+									}
+									if people_destinations_for_dropping contains dest{
+										add all:(people_on_road[dest] collect each.name) to: people_destinations_for_dropping[dest];
+										write self.name +" dest: "+ dest+ " was already in for_dropping "+ people_destinations_for_dropping[dest];
+									}else{
+										add dest::(people_on_road[dest] collect each.name) to:people_destinations_for_dropping;
+									} 
+									added_people<- length(people_on_road[dest])+ added_people;
+									total_added_people  <- total_added_people + added_people;
+									added_last<-true;
+									
+																  
+									write self.name + " capturing " + people_on_road[dest] collect each.name + " that have as target: " + dest;
+									write self.name + " " + int_targets + " " + ordered_or_dest + " " + people_destinations_for_dropping;
+									write self.name + " updating costs (added_last)";
+									
+									do update_costs;
+									bool next_too<-false;
+
+										
+									float cost<-0.0;
+									loop key over: cost_legs.keys{
+										if key[0]=current_road_nodes[1]{
+											next_too<-true;
+											cost <-  cost + (cost_legs[key][0]/cost_legs[key][1]);
+										}
+										if next_too{
+											cost <- cost + (cost_legs[key][0]/cost_legs[key][1]);
+											if key[1]=dest{break;}
+										}
+									}
+									ask people_on_road[dest]{
+										cost_proposed <- cost;
+										got_lift<-true;
+									}
+		
+									
+									capture people_on_road[dest] as: passenger{}
+									write self.name + " first passenger that got on from remaining " + first(list(passenger)) + " (" +first(list(passenger)).name + ")";
+									added<-true;
+								}
+								break;
+							}
+							i<-i+1;
+							
+								
+						}
+						remove all:people_on_road[dest] from: possible_pass;
+						if length(passenger) = max_passengers{
+							write self.name + " breaking the loop";
+							break;
+						}
+					}
+			
+				}
+			}
+			if total_added_people=0{
+				write self.name + ' removed '+ current_road_nodes[1] + '(new origin) from: '+ ordered_or_dest;
+				remove current_road_nodes[1] from: ordered_or_dest;
+			} else{
+				write self.name + " ("+ total_added_people+ ") updated costs "+ cost_legs;
+			}
+		}
+		state<-'moving';
+		self.location<- current_road_nodes[1].location;
 	}
 	
 	reflex drop_people when:!empty(passenger) and state='stop'{
@@ -919,17 +1241,7 @@ species car skills: [advanced_driving] control:fsm{
 				}
 				add substitute_state to: states_dropped;
 				release p in:world as:people{
-					name<-name;
-					location<-myself.location;
 					state<- substitute_state;
-					the_target<-t;
-					living_place <- living_place ;
-					working_place <- working_place;
-					start_work <- start_work;
-					end_work <- end_work;
-					dist_covered_alone<-dist_covered_alone;
-					dist<-0.0;
-					late<-late;
 				}
 			}
 		}
@@ -943,13 +1255,7 @@ species car skills: [advanced_driving] control:fsm{
 		write self.name + ' - '+ people_destinations_for_dropping;
 		the_target<-nil;
 		if empty(passenger){
-			state<-'wander';
-			first_lift<-true;
-			people_destinations_for_dropping<-nil;
-			costs_passengers<-nil;
-			mean_of_costs<-0.0;
-			min_of_costs<-0.0;
-			max_of_costs<-0.0;
+			do reset_vars_for_wander;
 			write self.name + " back to wandering";
 		} else{state<-'moving';}
 	}
@@ -1079,35 +1385,35 @@ experiment experiment_2D type: gui {
 //		monitor "Tot distance people" value: people_tot_distance_covered/100;
 //		monitor "Tot distance covered" value: sys_tot_distance_covered/1000;
 		
-		display city_display {
-			graphics "world" {
-				draw world.shape.contour;
-			}
-			species building aspect: base refresh:false;
-			species road aspect: base ;
-			species intersection aspect: base;
-			species car aspect: base;
-			species people aspect: base;
-			
-		}
-		display CostsPeople refresh: every (10 #cycle){
-				    	
-	    	chart "People moving alone" type: histogram size: {1, 0.5} position: {0, 0} 
-	    	title_font: 'Arial'  		title_font_size: 15.0 
-	    	tick_font: 'Arial'		tick_font_size: 10
-	    	label_font: 'Arial'   		label_font_size: 10
-	    	series_label_position: legend{
-					datalist["lift", "alone"] value:[((people where (each.got_lift=true)) collect each.cost_to_cover),
-						((people where (each.got_lift=false)) collect each.cost_to_cover)] color:[#blue, #crimson] line_visible: false;	
-	    	}
-	    	
-	    	chart "Mean of cost for passengers of each car" type: histogram size: {1, 0.5} position: {0, 0.5} 
-			series_label_position: legend{
-				data "max" value: car collect each.max_of_costs color: #blue;	
-				data "mean" value: car collect each.mean_of_costs color: #cyan;
-				data "min" value: car collect each.min_of_costs color: #lightblue;			
-	    	}
-		}
+//		display city_display {
+//			graphics "world" {
+//				draw world.shape.contour;
+//			}
+//			species building aspect: base refresh:false;
+//			species road aspect: base ;
+//			species intersection aspect: base;
+//			species car aspect: base;
+//			species people aspect: base;
+//			
+//		}
+//		display CostsPeople refresh: every (10 #cycle){
+//				    	
+//	    	chart "People moving alone" type: histogram size: {1, 0.5} position: {0, 0} 
+//	    	title_font: 'Arial'  		title_font_size: 15.0 
+//	    	tick_font: 'Arial'		tick_font_size: 10
+//	    	label_font: 'Arial'   		label_font_size: 10
+//	    	series_label_position: legend{
+//					datalist["lift", "alone"] value:[((people where (each.got_lift=true)) collect each.cost_to_cover),
+//						((people where (each.got_lift=false)) collect each.cost_to_cover)] color:[#blue, #crimson] line_visible: false;	
+//	    	}
+//	    	
+//	    	chart "Mean of cost for passengers of each car" type: histogram size: {1, 0.5} position: {0, 0.5} 
+//			series_label_position: legend{
+//				data "max" value: car collect each.max_of_costs color: #blue;	
+//				data "mean" value: car collect each.mean_of_costs color: #cyan;
+//				data "min" value: car collect each.min_of_costs color: #lightblue;			
+//	    	}
+//		}
 	}
 	
 }
