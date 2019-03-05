@@ -1,11 +1,6 @@
 model RoadTrafficComplex
  
 global {   
-	bool simple_data <- false;
-	
-	//Check if we use simple data or more complex roads
-//	file shape_file_buildings  <- file("../includes/buildings.shp");
-	
 	file shape_file_roads  <- file("../includes/roads.shp") ;
 	file shape_file_nodes  <- file("../includes/nodes.shp");
 	file shape_file_buildings  <- file("../includes/buildings.shp");
@@ -64,27 +59,29 @@ global {
 		create intersection from: shape_file_nodes with:[is_traffic_signal::(read("type") = "traffic_signals")];
 		
 		//create road agents using the shapefile and using the oneway column to check the orientation of the roads if there are directed
-		create road from: shape_file_roads with:[lanes::int(read("lanes")), oneway::string(read("oneway"))] {
+		create road from: shape_file_roads with:[lanes::int(read("lanes")), oneway::string(read("oneway")), junction::string(read("junction"))] {
 			geom_display <- shape + (2.5 * lanes);
 			maxspeed <- (lanes = 1 ? 30.0 : (lanes = 2 ? 50.0 : 70.0)) °km/°h;
 			switch oneway {
 				match "no" {
-					create road {
-						lanes <- max([1, int (myself.lanes / 2.0)]);
-						shape <- polyline(reverse(myself.shape.points));
-						maxspeed <- myself.maxspeed;
-						geom_display  <- myself.geom_display;
-						linked_road <- myself;
-						myself.linked_road <- self;
+					if junction!='roundabout'{
+						create road {
+							lanes <- max([1, int (myself.lanes / 2.0)]);
+							shape <- polyline(reverse(myself.shape.points));
+							maxspeed <- myself.maxspeed;
+							geom_display  <- myself.geom_display;
+							linked_road <- myself;
+							myself.linked_road <- self;
+						}
+						lanes <- int(lanes /2.0 + 0.5);
 					}
-					lanes <- int(lanes /2.0 + 0.5);
 				}
 				match "-1" {
 					shape <- polyline(reverse(shape.points));
 				}	
 			}
 		}		
-		ask road where ((each.linked_road)=nil){
+		ask road where ((each.linked_road)=nil and each.junction!='roundabout'){
 			create road {
 				lanes <- myself.lanes;
 				shape <- polyline(reverse(myself.shape.points));
@@ -254,6 +251,7 @@ species intersection skills: [skill_road_node] {
 species road skills: [skill_road] { 
 	geometry geom_display;
 	string oneway;
+	string junction;
 	float perim<-shape.perimeter;
 	int nb_agents<-length(all_agents) update: length(all_agents);
 	float capacity <- 1+(shape.perimeter*lanes)/v_length;
@@ -261,7 +259,7 @@ species road skills: [skill_road] {
 	float speed_coeff<- 0.0 update: (length(all_agents)/capacity) min:0.0; // = 1 max capience reached // <0 still space in // >1 should avoid it
 	
 	int ov_rgb<-150 update: 150-(150*int(speed_coeff)) min: 0 max:255; //0 ->150 // 1 e oltre -> 0
-	int ov_rgbR<-150 update: 255*int(speed_coeff)  min: 150 max: 255;
+	int ov_rgbR<-150 update: 255*int(speed_coeff)  min: 150 max: 255; // 1 e oltre -> 255 // 0 -> 0
 //	int ov_rgb<-150 update: int((1.1-speed_coeff)*255)-105 min:0; //0
 //	int ov_rgbR<-150 update: int(speed_coeff*255) min:150; //255
 	rgb color<-rgb(127,127,127) update: rgb(ov_rgbR, ov_rgb, ov_rgb);
@@ -278,8 +276,7 @@ species building{
 	string type;
 	string group;
 	rgb color<- rgb(200,200,200);
-//	float look_up<- 100.0;
-//	list<intersection> close_intersections <- intersection overlapping (self.shape+look_up) ;
+
 	aspect base{
 		draw shape color: color border: #gray;
 	}
@@ -294,35 +291,26 @@ species people skills:[moving] control: fsm {
 	point the_target <- nil ;
 	float dist<-0.0 ;
 	float dist_covered_alone ;
+	
+	bool starting<-true;
 	bool late<-false;
-	float time_needed<-0.0;
 	float actual_time_in;
+	
 	map road_knowledge<-road_weights update: road_weights;
 	path path_to_follow<-nil;
 	float look_up<-50.0;
 	string next_state<-nil;
-	bool got_lift<-false;
+	bool got_lift<-false; 
 	list<intersection> close_intersections <- nil 
 		update: ((state contains 'search_lift') ) ? intersection overlapping (self.shape+look_up) : nil;
 	
-	path path_to_cover;
 	float distance_to_cover;
-	float time_to_cover;
+	float time_to_cover<-0.0;
+	float time_needed<-0.0;
 	float cost_to_cover<-0.0;
 	float cost_proposed<-0.0;
-	bool up_costs<-true;
-	
-	reflex update_costs when: (state contains 'search_lift') and the_target!=nil and up_costs=true{
-//		write self.name + " " +the_target;
-		path_to_cover <- path_between(the_graph, location,the_target);
-		distance_to_cover <- path_to_cover.shape.perimeter;
-		time_to_cover<-0.0;
-		loop e over: path_to_cover.edges{
-			time_to_cover <- time_to_cover + (road(e).shape.perimeter / 5.0 );
-		}
-		cost_to_cover<- (distance_to_cover/1000)*cost_km;
-		up_costs<-false;
-	}
+	float departure_time<-0.0;
+	float arrival_time<-0.0;
 	
 	state resting initial:true{
 		enter{
@@ -337,7 +325,6 @@ species people skills:[moving] control: fsm {
 			color<- #yellow;
 			late<-false;
 			next_state<-'go_work';
-			up_costs<-true;
 		}
 		transition to: go_work when: current_hour = start_work -before_work_start;
 	}
@@ -380,7 +367,6 @@ species people skills:[moving] control: fsm {
 			late<-false;
 			color<-#thistle;
 			next_state<-'go_home';
-			up_costs<-true;
 		}
 		transition to: go_home when: current_hour = end_work+after_work_start;
 	}
@@ -392,7 +378,7 @@ species people skills:[moving] control: fsm {
 		transition to: resting when: self.location = living_place.location;		
 	}
 	
-	reflex movement when: the_target!=nil and path_to_follow=nil and(state="search_lift_home" or state="search_lift_work"){
+	reflex search_path when: the_target!=nil and path_to_follow=nil and(state="search_lift_home" or state="search_lift_work"){
 		if (path_to_follow = nil) {
 			//Find the shortest path using the agent's own weights to compute the shortest path
 			path_to_follow <- path_between(the_graph with_weights road_knowledge, location,the_target);
@@ -401,6 +387,7 @@ species people skills:[moving] control: fsm {
 				loop seg over:segments{
 					dist <- (dist + seg.perimeter );
 					time_needed<- (time_needed + (seg.perimeter/(speed)));
+					time_needed<- (time_needed + (seg.perimeter/(speed)));
 					
 				}
 			}
@@ -408,12 +395,20 @@ species people skills:[moving] control: fsm {
 	}
 	reflex move when: path_to_follow!=nil and (state contains 'go_'){
 		//the agent follows the path it computed but with the real weights of the graph
+		if starting{
+			departure_time<- current_hour;
+			starting<-false;
+		}
 		do follow path:path_to_follow speed: 5.0#m/#s move_weights: road_weights;
 		if the_target = location {
+			arrival_time<- current_hour;
+			time_to_cover<- arrival_time-departure_time;
 			dist_covered_alone<-dist_covered_alone + dist;
 			dist<-0.0;
 			the_target <- nil ;
 			time_needed<-0.0;
+			path_to_follow<-nil;
+			starting<-true;
 		}
 	}
 	aspect base {
@@ -631,7 +626,6 @@ species car skills: [advanced_driving] control:fsm{
 			remove key: last(int_targets) from: people_destinations;
 		}
 	}
-	
 	
 	reflex create_path when: !empty(possible_pass+first_p) and state='real_stop' and first_p!=nil{ 
 		intersection origin<- current_road_nodes[1];
@@ -963,25 +957,7 @@ species car skills: [advanced_driving] control:fsm{
 		}
 		
 	}
-	
-//	action update_costs_existing{
-//		int difference_in_dest_or <- (index_dest - origin_index)-1;
-//		write self.name + " modifying when already exiting | origin_index: " + origin_index + " index_dest: " + index_dest + " targets in between: " + difference_in_dest_or;
-//		int stop_at;
-//		
-//		int i<-0;
-//		bool take_existing<-false;
-//		loop key over: cost_legs.keys{
-//			if i>=origin_index and i<index_dest{
-//				write self.name + " " + key + " original:" + cost_legs[key] + " after change: "+ cost_legs[key][1]+added_people;
-//				cost_legs[key][1]<- cost_legs[key][1]+added_people;
-//			}
-//			if i=index_dest{ break; }
-//			i<-i+1;
-//		}
-//		write self.name + " updated (existing) cost_legs: " + cost_legs;
-//	}
-	
+		
 	reflex add_on_road when: !empty(people_near) and (state='moving') and length(passenger)< max_passengers{ //state!='wander' or state!='real_stop' or state!='stop'
 		state<-'real_stop';
 //		write self.name + " changing to real_stop on the road to add passengers";
@@ -1305,7 +1281,6 @@ species cars skills: [advanced_driving]{
 	bool breakdown <- false;
 	float proba_breakdown ;
 	intersection target;
-	float dist_covered_cars<-0.0;
 
 	reflex breakdown when: flip(proba_breakdown){
 		breakdown <- true;
@@ -1385,17 +1360,17 @@ experiment experiment_2D type: gui {
 //		monitor "Tot distance people" value: people_tot_distance_covered/100;
 //		monitor "Tot distance covered" value: sys_tot_distance_covered/1000;
 		
-//		display city_display {
-//			graphics "world" {
-//				draw world.shape.contour;
-//			}
-//			species building aspect: base refresh:false;
-//			species road aspect: base ;
-//			species intersection aspect: base;
-//			species car aspect: base;
-//			species people aspect: base;
-//			
-//		}
+		display city_display {
+			graphics "world" {
+				draw world.shape.contour;
+			}
+			species building aspect: base refresh:false;
+			species road aspect: base ;
+			species intersection aspect: base;
+			species car aspect: base;
+			species people aspect: base;
+			
+		}
 //		display CostsPeople refresh: every (10 #cycle){
 //				    	
 //	    	chart "People moving alone" type: histogram size: {1, 0.5} position: {0, 0} 
