@@ -5,17 +5,20 @@ global {
 	file shape_file_roads  <- file("../includes/roads.shp") ;
 	file shape_file_nodes  <- file("../includes/nodes.shp");
 	file shape_file_buildings  <- file("../includes/buildings.shp");
-	geometry shape <- envelope(shape_file_roads) + 50.0;
+	geometry shape <- envelope(shape_file_roads);
 	
 	list<geometry> zones<- to_rectangles(shape, {shape.width/4,shape.height/4});
 	
 	graph the_graph;  
 	graph road_network;  
 	map road_weights;
+	map graph_weights;
 	
-	int nb_people <- 300;
-	int nb_cars <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5);
-	int nb_car <- 5; //((nb_people mod 5) >0) ? int(nb_people/10) + 1 : int(nb_people/10);
+	int nb_people <- 500;
+//	int nb_cars <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5);
+	int nb_cars <- 100;
+	int nb_car <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5);
+	
 	list<car> not_full_cars <- list(car) 
 				update: ( ( ( current_hour >(min_work_start-before_work_search) ) and ( current_hour < (max_work_start-before_work_start) ) ) or 
 					( (current_hour >min_work_end) and (current_hour <(max_work_end +after_work_start)) ) ) ? 
@@ -44,6 +47,11 @@ global {
 	float cost_km <- 1.50;
 	
 	float v_length <- 5.0#m;
+	
+	float stats_grouping_time <-0.0;
+	float stats_path_time <-0.0;
+	int n_grouping;
+	
 	// distances covered by people and cars in the system, when ensembles are created
 //	float cars_tot_distance_cover<-0.0#m  ;
 //	float people_tot_distance_cover<-0.0#m  ;
@@ -96,7 +104,9 @@ global {
 			}
 		}
 		
-		road_weights <- road as_map (each::((each.shape.perimeter / each.maxspeed)));
+		road_weights <- road as_map (each::each.shape.perimeter * each.speed_coeff);
+		graph_weights <- road as_map (each::each.shape.perimeter);
+//		road_weights <- road as_map (each::((each.shape.perimeter / each.maxspeed)));
 		//creation of the road network using the road and intersection agents
 		road_network <-  (as_driving_graph(road, intersection))  with_weights road_weights;
 		the_graph<- as_edge_graph(road);
@@ -109,7 +119,7 @@ global {
 		create building from: shape_file_buildings with:[type::string(read("type")), group::string(read("group"))]; 
 		ask building{
 			if group='residential'{
-				color <- #lightblue;
+				color <- #cyan;
 			} else{
 				color<-#blue;
 			}
@@ -167,14 +177,23 @@ global {
 			proba_breakdown <- 0.00001;
 		}	
 	}
+	reflex stop_simulation when: remove_duplicates(people collect each.state)=['working'] and (length(list(people))=nb_people){
+		write "passengers taken: " +length(people where (each.got_lift=true));
+      do pause ;
+   }
 	reflex update_road_speed {
-		road_weights <- road as_map (each::((each.shape.perimeter / each.maxspeed) * (each.speed_coeff)));
+//		road_weights <- road as_map (each::each.shape.perimeter / each.speed_coeff);
+		road_weights <- road as_map (each::(each.shape.perimeter * (each.speed_coeff)));
 		road_network <- road_network with_weights road_weights;
 	}
 	reflex create_groups  when:( ( ( current_hour >(min_work_start-before_work_search) ) and ( current_hour < (max_work_start-before_work_start) ) ) or ( (current_hour >min_work_end) and (current_hour <(max_work_end +after_work_start)) ) )
 								and !empty(not_full_cars){
+		
 		list<list<people>> people_in_range <- (people where ((each.state contains 'search_lift' )and each.the_target!=nil) simple_clustering_by_distance 1 )  where (/*( (length (each)) <=5) and*/ ( (length (each)) >0) ) ;
 		if(people_in_range!=[]){
+			stats_grouping_time <- machine_time;
+			
+			
 			write "___________________GROUPS @ " + h+" ("+ current_hour+") DAY "+(g+1)+"___________________";
 			loop bigger over: people_in_range where (length(each)>5){
 //				write "group longer than 5 " +bigger;
@@ -187,6 +206,11 @@ global {
 					five<-nil;
 				}
 			}
+			
+			int people_considered <- length(people where ((each.state contains 'search_lift' )and each.the_target!=nil));
+			int cars_considered <- length(not_full_cars);
+			int groups_considered <- length(people_in_range);
+			
 			loop one_group over: people_in_range{
 				list<string> names<-one_group collect each.name; 
 //				write string(names) + " - "+string(one_group);
@@ -201,9 +225,9 @@ global {
  						add p.name to: destinations[p.target_intersection];
  					}else{
  						add p.target_intersection::[p.name] to: destinations;
- 						
  					}
 				}
+//				write " one_group: " + one_group+ " destinations:"+ destinations;
 //				write "destinations: "+ destinations;
 				
 //				write string(names) + " " + string(destinations) + " "+ string(pass_location);
@@ -215,52 +239,79 @@ global {
 								sort_by ((road_network path_between (each.location, pass_location)).shape.perimeter / each.speed);
 								
 				loop c over: available_cars{
+//					write "CAR: "+c.name+ " GROUP: "+ one_group;
 					path tmp <- nil;
 					int ref_angle <-0;
 					intersection origin<-nil;
-					
+					float time_tmp <-0.0;
 					if !empty(c.give_lift_to.keys){
 						origin<-  last(c.give_lift_to.keys);
 						ref_angle <- angle_between(first(c.give_lift_to.keys).location, c.location, pass_location.location);
 						tmp <- road_network path_between(last(c.give_lift_to.keys), pass_location);
+						time_tmp <- tmp.edges=[] ? 500 : tmp.shape.perimeter/8.3;
 					} else{
 						tmp <- road_network path_between(c.location, pass_location);
+						time_tmp <- tmp.edges=[] ? 500.0 : 0.0;
 					}
 					
 					if tmp.edges!=[]{
-						if ref_angle<30 and (tmp.edges=[] ? 500 : tmp.shape.perimeter/8.3)<245{
-							write c.name + " angle: " + ref_angle + " source of path:" + ((origin=nil) ? c.location : origin) +" time @ slowest "+ tmp.shape.perimeter/8.3; 
-							add pass_location::one_group to: c.give_lift_to;
-							
+						if ref_angle<30 and time_tmp <180{
+//							write c.name + " angle: " + ref_angle + " source of path:" + ((origin=nil) ? c.location : origin) +" time @ slowest "+ tmp.shape.perimeter/8.3; 
+							list<people> copy1;
+							list<people> to_remove;
+							add all:one_group to: copy1;							
 							loop d over: destinations.keys{
-								if !empty(c.people_destinations.keys){
-									point centre <- mean(c.people_destinations.keys collect each.location);
-									if d distance_to centre < 4000{
-										add d::destinations[d] to: c.people_destinations;
-									}else{
-										list<people> to_remove <- one_group where (!empty([each.name] inter destinations[d]));
-										remove to_remove from: one_group;
-									}
+								if d = pass_location{
+									 to_remove <- copy1 where (!empty([each.name] inter destinations[d]));
+									remove all:to_remove from: copy1;
 								}else{
-									add d::destinations[d] to: c.people_destinations;
+									if !empty(c.people_destinations.keys){
+										point centre <- mean(c.people_destinations.keys collect each.location);
+										if d distance_to centre < 500{
+											if !(c.people_destinations.keys contains d){
+												add d::destinations[d] to: c.people_destinations;
+											} else{
+												add all:destinations[d] to:c.people_destinations[d]; 
+											}
+											
+										}else{
+											to_remove <- copy1 where (!empty([each.name] inter destinations[d]));
+											remove all:to_remove from: copy1;
+	//										write c.name + " (removed) d:"+ d+" people: "+ destinations[d];
+										}
+									}else{
+										add d::destinations[d] to: c.people_destinations;
+									}
 								}
 							}
-							loop p over: one_group{
-								p.state<- 'wait_for_lift';
-								add p to: c.all_passengers;
+							if copy1!=[]{
+								if c.give_lift_to.keys contains pass_location{
+									add all:copy1 to: c.give_lift_to[pass_location];
+								} else{
+									add pass_location::copy1 to: c.give_lift_to;
+								}
+								remove all:copy1 from:one_group;
+								loop p over: copy1{
+									p.state<- 'wait_for_lift';
+									add p to: c.all_passengers;
+								}
+	//							write c.name + " " + c.give_lift_to + " "+ c.people_destinations;
+								c.passengers_waiting <- length(copy1)+ c.passengers_waiting;
+								
+								c.state<-'still_place';
+								write c.name + " was assigned passengers (TOT: "+c.passengers_waiting+"): " + copy1 collect each.name + " that are at: "+ pass_location + " and current_location is: " + c.location ;
+								write c.name + " there is a path between us with distance : "+ tmp.shape.perimeter;
+								write c.name + " waiting : "+ c.passengers_waiting + " give_lift_to : "+ c.give_lift_to;
+								break;
 							}
-//							write c.name + " " + c.give_lift_to + " "+ c.people_destinations;
-							c.passengers_waiting <- length(one_group)+ c.passengers_waiting;
-							
-							c.state<-'still_place';
-							write c.name + " was assigned passengers (TOT: "+c.passengers_waiting+"): " + names + " that are at: "+ pass_location + " and current_location is: " + c.location ;
-							write c.name + " there is a path between us with distance : "+ tmp.shape.perimeter;
-							break;
-						}
+						} 
 					}
 				}
-							
 			}
+			stats_grouping_time<- machine_time - stats_grouping_time;
+
+			n_grouping<- n_grouping+1;
+			write "grouping "+(n_grouping<0? "0":"") +n_grouping+ ", " + stats_grouping_time + ", "+ people_considered + ", "+cars_considered + ", "+groups_considered;
 		}
 	}
 } 
@@ -347,16 +398,13 @@ species road skills: [skill_road] {
 	geometry geom_display;
 	string oneway;
 	string junction;
-	float perim<-shape.perimeter;
+	float perim<-shape.perimeter;	
 	int nb_agents<-length(all_agents) update: length(all_agents);
 	float capacity <- 1+(shape.perimeter*lanes)/v_length;
-//	float speed_coeff <- 0.1 update: (1.0- exp(-nb_agents/capacity)) min: 0.1;
-	float speed_coeff<- 0.0 update: (length(all_agents)/capacity) min:0.0; // = 1 max capience reached // <0 still space in // >1 should avoid it
+	float speed_coeff<- 0.1 update: (length(all_agents)/capacity) min:0.1 max:((shape.perimeter < 1.0) ? 1.0 : 3.0);
 	
-	int ov_rgb<-150 update: 150-(150*int(speed_coeff)) min: 0 max:255; //0 ->150 // 1 e oltre -> 0
-	int ov_rgbR<-150 update: 255*int(speed_coeff)  min: 150 max: 255; // 1 e oltre -> 255 // 0 -> 0
-//	int ov_rgb<-150 update: int((1.1-speed_coeff)*255)-105 min:0; //0
-//	int ov_rgbR<-150 update: int(speed_coeff*255) min:150; //255
+	int ov_rgb<-150 update: 150-(150*int(speed_coeff-0.1)) min: 0 max:255; //0.1 ->150 // 1 e oltre -> 0
+	int ov_rgbR<-150 update: 255*int(speed_coeff-0.1)  min: 150 max: 255; // 1 e oltre -> 255 // 0.1 -> 0
 	rgb color<-rgb(127,127,127) update: rgb(ov_rgbR, ov_rgb, ov_rgb);
 	
 	aspect base {    
@@ -390,9 +438,9 @@ species people skills:[moving] control: fsm {
 	
 	bool starting<-true;
 	bool late<-false;
-	float actual_time_in;
+	float actual_time_in<-0.0;
 	
-	map road_knowledge<-road_weights update: road_weights;
+	map road_knowledge<- graph_weights;
 	path path_to_follow<-nil;
 	float look_up<-50.0;
 	string next_state<-nil;
@@ -455,7 +503,7 @@ species people skills:[moving] control: fsm {
 	state working{
 		enter{
 			color <- #blue;
-			actual_time_in<-time/3600;
+			actual_time_in<- ((actual_time_in =0.0) ? time/3600 : actual_time_in);
 //			if late{write string(self.name) + " ATI "+actual_time_in + " SUPPOSED "+start_work ;}
 			next_state<-'search_lift_home';
 		}
@@ -469,6 +517,7 @@ species people skills:[moving] control: fsm {
 			late<-false;
 			color<-#thistle;
 			next_state<-'go_home';
+			actual_time_in<-0.0;
 		}
 		transition to: go_home when: current_hour = end_work+after_work_start;
 	}
@@ -481,7 +530,7 @@ species people skills:[moving] control: fsm {
 		transition to: resting when: self.location = living_place.location;		
 	}
 	
-	reflex search_path when: the_target!=nil and path_to_follow=nil and(state="search_lift_home" or state="search_lift_work"){
+	reflex search_path when: the_target!=nil and path_to_follow=nil and(state contains "search_lift"){
 		if (path_to_follow = nil) {
 			//Find the shortest path using the agent's own weights to compute the shortest path
 			path_to_follow <- path_between(the_graph with_weights road_knowledge, location,the_target);
@@ -489,9 +538,7 @@ species people skills:[moving] control: fsm {
 				list<geometry> segments <- path_to_follow.segments;
 				loop seg over:segments{
 					dist <- (dist + seg.perimeter );
-					time_needed<- (time_needed + (seg.perimeter/(speed)));
-					time_needed<- (time_needed + (seg.perimeter/(speed)));
-					
+					time_needed<- (time_needed + (seg.perimeter/(speed)));					
 				}
 			}
 		}
@@ -502,7 +549,7 @@ species people skills:[moving] control: fsm {
 			departure_time<- current_hour;
 			starting<-false;
 		}
-		do follow path:path_to_follow speed: 5.0#m/#s move_weights: road_weights;
+		do follow path:path_to_follow speed: 30.0#m/#s move_weights: graph_weights;
 		if the_target = location {
 			arrival_time<- current_hour;
 			time_to_cover<- arrival_time-departure_time;
@@ -516,7 +563,7 @@ species people skills:[moving] control: fsm {
 	}
 	aspect base {
 //		draw triangle(50) color: color rotate: 90 + heading;
-		draw square(50) color: color;
+		draw circle(20) color: rgb(rnd(100,220),rnd(100,220), rnd(100,220));//color;
 	}
 }
 
@@ -532,30 +579,24 @@ species car skills: [advanced_driving] control:fsm{
 	float dist <-0.0;
 	float dist_covered_cars<-0.0;
 	
-	path eventual_path;
-	map<intersection, list<people>> give_lift_to;
-
+	int n_travels <- 0;
 	
+	map<intersection, list<people>> give_lift_to;
 	map<intersection, list<string>> people_destinations;
 	map<list<intersection>, list<float>> cost_legs;
 	list<people> all_passengers;
-	bool added_last;
-	int added_people;
-	int index_dest;
-	
 	map<string, list<float>> cost_passengers<-nil; // list of costs per each passenger
+	
+	int max_passengers<-5;
+	int passengers_waiting<-0;
+	int on_board<- 0 update: length(passenger) min:0;
+	int time_to_go<-rnd(12,24);
+	int counter<-0;
+	
 	map<list<string>, float> waiting_time<-nil;
 	float mean_of_costs<-0.0;
 	float max_of_costs<-0.0;
 	float min_of_costs<-0.0;
-	
-	int max_passengers<-5;
-	int passengers_waiting<-0;
-	int on_board<- 0 update: length(passenger) min:0; 
-	list<intersection> current_road_nodes;
-	int time_to_go<-rnd(12,24);
-	int counter<-0;
-
 	
 	float arrived_time<-0.0;
 	float starting_time<-0.0;	
@@ -564,7 +605,7 @@ species car skills: [advanced_driving] control:fsm{
 	state still_place{}
 	state moving{} 
 	state stop{}
-	state real_stop{}
+	state computing{}
 	
 	reflex breakdown when: flip(proba_breakdown){
 		breakdown <- true;
@@ -594,16 +635,23 @@ species car skills: [advanced_driving] control:fsm{
 	action reset_vars_for_wander{
 		state<- 'wander';
 		the_target<-nil;
-		people_destinations<-nil;
-		give_lift_to<-nil;
-		cost_passengers<-nil;
-		cost_legs<-nil;
-		mean_of_costs<-0.0;
-		min_of_costs<-0.0;
-		max_of_costs<-0.0;
-		on_board<-0;
+		
 		passengers_waiting<-0;
+		on_board<-0;
 		all_passengers<-nil;
+		
+		
+		give_lift_to<-nil;
+		people_destinations<-nil;
+		cost_legs<-nil;
+		cost_passengers<-nil;
+		waiting_time<-nil;
+		
+		mean_of_costs<-0.0;
+		max_of_costs<-0.0;
+		min_of_costs<-0.0;
+		
+		counter<-0;
 	}	
 	
 	action chose_new_target{
@@ -665,13 +713,15 @@ species car skills: [advanced_driving] control:fsm{
 			the_target<-nil;
 			final_target<-nil;
 			current_path<-nil;
-			state<-'real_stop';
-			write self.name + " setting off. (Passengers waiting: "+passengers_waiting + ". Time_left: "+(time_to_go-counter)*60;
+			state<-'computing';
+			write self.name + " h"+current_hour+" setting off. (Passengers waiting: "+passengers_waiting + ". Time_left: "+(time_to_go-counter)*60;
 		} 
 	}
 
 	
-	reflex create_path_costs when:!empty(give_lift_to) and state='real_stop' {
+	reflex create_path_costs when:!empty(give_lift_to) and state='computing' {
+		stats_path_time<- machine_time;
+		write self.name + " give_lift_to: "+ give_lift_to ;
 		list<intersection> sorted_origins <- give_lift_to.keys;
 		list<intersection> sorted_destinations <- (people_destinations.keys) sort_by (road_network path_between(last(give_lift_to.keys), each));
 		
@@ -686,18 +736,20 @@ species car skills: [advanced_driving] control:fsm{
 		list<intersection> new_key;
 		float time_leg<- 0.0;
 		
-		write self.name + " COMPUTING COSTS";
+		write self.name + " h"+current_hour+" COMPUTING COSTS";
+		write self.name + " all passengers: " + all_passengers;
 		write self.name + " origins: " + sorted_origins + " destinations: " +sorted_destinations;
 		
 		int i<-0;
-		write self.name + " computing costs for leg <"+ location + ", "+ sorted_origins[i] +">"; 
-		leg <- road_network path_between(location, sorted_origins[i]);
+		write self.name + " computing costs for leg <"+ location + ", "+ sorted_origins[0] +">"; 
+		leg <- road_network path_between(location, sorted_origins[0]);
 		loop e over: list<road>(leg.edges){
 			time_to_reach <- time_to_reach + (e.shape.perimeter/e.maxspeed);
 			time_leg<- time_leg + (e.shape.perimeter/e.maxspeed);
 		}
-		write self.name + " time to wait for "+ give_lift_to[sorted_origins[i]]+ " is "+ time_to_reach;
-		add (give_lift_to[sorted_origins[i]] collect each.name)::time_to_reach to: waiting_time;
+//		write self.name + " time to wait for "+ give_lift_to[sorted_origins[0]]+ " is "+ time_to_reach;
+
+		add (give_lift_to[sorted_origins[0]] collect each.name)::time_to_reach to: waiting_time;
 		
 		loop times: length(give_lift_to.keys)-1{
 			path leg<-nil;
@@ -712,11 +764,9 @@ species car skills: [advanced_driving] control:fsm{
 				time_to_reach <- time_to_reach + (e.shape.perimeter/e.maxspeed);
 				time_leg<- time_leg + (e.shape.perimeter/e.maxspeed);
 			}
-			write self.name + " time to wait for "+ give_lift_to[sorted_origins[i]]+ " is "+ time_to_reach;
+//			write self.name + " time to wait for "+ give_lift_to[sorted_origins[i+1]]+ " is "+ time_to_reach;
 			add (give_lift_to[sorted_origins[i+1]] collect each.name)::time_to_reach to: waiting_time;
-			write self.name + " "+ waiting_time;
-			
-			cost <- (leg.shape.perimeter/1000)*cost_km / people_on_leg;
+			cost <- (leg.shape.perimeter/1000)*cost_km;
 			new_key <- [sorted_origins[i], sorted_origins[i+1]];
 			add new_key::[cost, people_on_leg, time_leg] to:cost_legs;	
 			
@@ -727,18 +777,32 @@ species car skills: [advanced_driving] control:fsm{
 		time_leg<-0.0;
 		cost<-0.0;
 		
-		people_on_leg<- people_on_leg + length(give_lift_to[last(sorted_origins)]);
-		write self.name + " computing costs for leg <"+ last(sorted_origins) + ", "+ sorted_destinations[i] +"> with "+ people_on_leg + " passengers on"; 
-		leg <- road_network path_between(last(sorted_origins), sorted_destinations[i]);
-		loop e over: list<road>(leg.edges){
-			time_leg<- time_leg + (e.shape.perimeter/e.maxspeed);
-		}
-		cost <- (leg.shape.perimeter/1000)*cost_km / people_on_leg;
-		new_key <- [last(sorted_origins), sorted_destinations[i]];
-		add new_key::[cost, people_on_leg, time_leg] to:cost_legs;
-		add sorted_destinations[i]::tmp[sorted_destinations[i]] to:people_destinations;
 		
-		loop times: length(sorted_destinations)-1{
+		if last(sorted_origins)!=sorted_destinations[0]{
+			people_on_leg<- people_on_leg + length(give_lift_to[last(sorted_origins)]);
+			write self.name + " computing costs for leg <"+ last(sorted_origins) + ", "+ sorted_destinations[0] +"> with "+ people_on_leg + " passengers on"; 
+			leg <- road_network path_between(last(sorted_origins), sorted_destinations[0]);
+			loop e over: list<road>(leg.edges){
+				time_leg<- time_leg + (e.shape.perimeter/e.maxspeed);
+			}
+			cost <- (leg.shape.perimeter/1000)*cost_km;
+			new_key <- [last(sorted_origins), sorted_destinations[0]];
+			add new_key::[cost, people_on_leg, time_leg] to:cost_legs;
+			add sorted_destinations[0]::tmp[sorted_destinations[0]] to:people_destinations;
+		} else{
+			people_on_leg<- people_on_leg + length(give_lift_to[last(sorted_origins)])-length(tmp[sorted_destinations[i]]);
+			i<-1;
+			write self.name + " computing costs for leg <"+ last(sorted_origins) + ", "+ sorted_destinations[i] +"> with "+ people_on_leg + " passengers on";
+			leg <- road_network path_between(last(sorted_origins), sorted_destinations[i]);
+			loop e over: list<road>(leg.edges){
+				time_leg<- time_leg + (e.shape.perimeter/e.maxspeed);
+			}
+			cost <- (leg.shape.perimeter/1000)*cost_km;
+			new_key <- [last(sorted_origins), sorted_destinations[i]];
+			add new_key::[cost, people_on_leg, time_leg] to:cost_legs;
+			add sorted_destinations[0]::tmp[sorted_destinations[i]] to:people_destinations;
+		}
+		loop times: ((last(sorted_origins)!=sorted_destinations[0]) ? (length(sorted_destinations)-1) : (length(sorted_destinations)-2)){
 			time_leg<-0.0;
 			cost<-0.0;
 			
@@ -748,7 +812,9 @@ species car skills: [advanced_driving] control:fsm{
 			loop e over: list<road>(leg.edges){
 				time_leg<- time_leg + (e.shape.perimeter/e.maxspeed);
 			}
-			cost <- (leg.shape.perimeter/1000)*cost_km / people_on_leg;
+//			write self.name + "from: "+ sorted_destinations[i] + " to: "+ sorted_destinations[i+1] + " "+ leg;
+			
+			cost <- (leg.shape.perimeter/1000)*cost_km;
 			new_key <- [sorted_destinations[i], sorted_destinations[i+1]];
 			add new_key::[cost, people_on_leg, time_leg] to:cost_legs;
 			add sorted_destinations[i+1]::tmp[sorted_destinations[i+1]] to:people_destinations;
@@ -756,18 +822,23 @@ species car skills: [advanced_driving] control:fsm{
 			
 		}
 		
-		write self.name + " waiting times: " + waiting_time + "\n"+" cost_legs:"+cost_legs;
+//		write self.name + " waiting times: " + waiting_time + " cost_legs:"+cost_legs;
 		
-		
+		int total_stops <- 1+ length(sorted_origins) + length(sorted_destinations);
 		
 		loop p over: all_passengers{
-			cost<-0.0;
-			time_leg<-0.0;
 			
 			intersection origin <- intersection closest_to (p.location);
 			intersection dest <- intersection closest_to (p.the_target);
 			write self.name + " computing costs for passenger "+ p.name + " from "+ origin+ "to "+ dest;
+			
+			cost<-0.0;
+			time_leg<-0.0;
+			
 			list<string> key_waiting <- (waiting_time.keys where (each contains p.name))[0];
+			
+			write self.name + " waiting_time["+key_waiting+"]="+ waiting_time[key_waiting];
+			
 			time_to_reach <- waiting_time[key_waiting];
 			
 			bool next_too<-false;
@@ -784,9 +855,16 @@ species car skills: [advanced_driving] control:fsm{
 					if key[1]=dest{break;}
 				}
 			}
-			add (p.name)::[cost, time_to_reach, time, time_leg] to: cost_passengers;
+			add (p.name)::[cost, time_to_reach, time_leg] to: cost_passengers;
 		}	
-		write self.name + " cost_passengers: "+cost_passengers;
+		write self.name + " waiting times: " + waiting_time + " cost_legs:"+cost_legs + " cost_passengers: "+cost_passengers;
+		stats_path_time<- machine_time - stats_path_time;
+		n_travels <- n_travels+1;
+		int total_passengers<- length(cost_passengers.keys);
+		list<float> costs_p <- cost_passengers.values collect each[0];
+		list<float> waiting_times <- cost_passengers.values collect each[1];
+			
+		write ((car index_of self<10)? "0": "") + string(car index_of self) +", " +n_travels +", " +stats_path_time+", " +total_stops+", " +total_passengers+", " +waiting_times+ ", "+ costs_p; 
 		state<-'moving';
 	}
 	reflex capture_people when: !empty(give_lift_to) and state='stop'{
@@ -796,17 +874,18 @@ species car skills: [advanced_driving] control:fsm{
 		remove key:the_target from: give_lift_to;
 		write self.name + " removed the key " + the_target + " from " + give_lift_to;
 		ask to_capture{
+			got_lift<-true;
 			cost_proposed <- myself.cost_passengers[name][0];
 			time_to_wait <- myself.cost_passengers[name][1];
 			time_trip <- myself.cost_passengers[name][2];
 			total_time_needed <- time_to_wait + time_trip;
 		}
 		capture to_capture as: passenger{} 
-		write self.name + " at: " + the_target + " has captured: " + names;
+		write self.name + " h"+current_hour+" at: " + the_target + " has captured: " + names;
 		
 		the_target<-nil;
 		state<-'moving';
-		write self.name + " changed state back to moving";
+		write self.name + " h"+current_hour+" changed state back to moving";
 	}
 	reflex drop_people when:!empty(passenger) and state='stop'{
 		list<string>names;
@@ -818,7 +897,7 @@ species car skills: [advanced_driving] control:fsm{
 //		write self.name + " People destinations: " + people_destinations + " current_target "+ the_target ;
 		loop p over: (passenger){
 			if people_destinations[the_target] contains p.name and self.location=the_target.location{
-				write self.name + " People destinations[target]: " + people_destinations[the_target] + " - p "+ p + "="+ p.name;
+//				write self.name + " People destinations[target]: " + people_destinations[the_target] + " - p "+ p + "="+ p.name;
 				add p to: dropped;
 				add p.name to: names;
 				point t<-p.the_target;
@@ -843,7 +922,7 @@ species car skills: [advanced_driving] control:fsm{
 		}
 		
 		remove key:the_target from: people_destinations;
-		write self.name + ' removed the_target from int_targets and from people_destinations and then the_target is set to nil';
+//		write self.name + ' removed the_target from int_targets and from people_destinations and then the_target is set to nil';
 		write self.name + ' - '+ people_destinations;
 		the_target<-nil;
 		if empty(passenger){
@@ -966,9 +1045,11 @@ species cars skills: [advanced_driving]{
 	
 } 
 
-experiment experiment_2D type: gui {
+experiment Centralised type: gui {
 	float minimum_cycle_duration <- 0.01;
-//	parameter "if true, simple data (simple track), if false complex one (Manhattan):" var: simple_data category: "GIS" ;
+	parameter "people" var: nb_people <- 100 ;
+    parameter "cars" var: nb_car <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5) ;
+
 	output {
 		monitor "Current hour" value: current_hour;
 //		monitor "Tot distance cars" value: cars_tot_distance_covered/1000;
@@ -977,13 +1058,14 @@ experiment experiment_2D type: gui {
 		
 		display city_display {
 			graphics "world" {
-				draw world.shape.contour;
+				draw world.shape.contour color:#black;
 			}
+			
 			species building aspect: base refresh:false;
 			species road aspect: base ;
 			species intersection aspect: base;
 			species car aspect: base;
-			species people aspect: base;
+			species people aspect: base transparency: 0.2;
 			
 		}
 //		display CostsPeople refresh: every (10 #cycle){
