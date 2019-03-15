@@ -52,6 +52,8 @@ global {
 	float stats_path_time <-0.0;
 	int n_grouping;
 	
+	float start_simulation;
+	
 	// distances covered by people and cars in the system, when ensembles are created
 //	float cars_tot_distance_cover<-0.0#m  ;
 //	float people_tot_distance_cover<-0.0#m  ;
@@ -221,10 +223,10 @@ global {
 					if pass_location=nil{
 						pass_location<- intersection closest_to (p.location);
 					}
- 					if destinations.keys contains p.target_intersection{
- 						add p.name to: destinations[p.target_intersection];
+ 					if destinations.keys contains (intersection closest_to p.the_target){
+ 						add p.name to: destinations[(intersection closest_to p.the_target)];
  					}else{
- 						add p.target_intersection::[p.name] to: destinations;
+ 						add (intersection closest_to p.the_target)::[p.name] to: destinations;
  					}
 				}
 //				write " one_group: " + one_group+ " destinations:"+ destinations;
@@ -314,6 +316,19 @@ global {
 			write "grouping "+(n_grouping<0? "0":"") +n_grouping+ ", " + stats_grouping_time + ", "+ people_considered + ", "+cars_considered + ", "+groups_considered;
 		}
 	}
+	reflex stop_simulation when: remove_duplicates(people collect each.state)=['working'] and (length(list(people))=nb_people){
+		list<people> were_passengers <- (people where (each.got_lift=true));
+		list<float> costs_proposed <- were_passengers collect each.cost_proposed;
+		list<float> w_times<- were_passengers collect each.waiting_time;
+		write "passengers taken: " +length(were_passengers);
+		write "cars used: " +length(car where (each.gave_lift=true));
+		write 'cost proposed ('+(length(were_passengers)=length(costs_proposed))+' ' +length(costs_proposed)+'): ' + mean(costs_proposed);
+		write costs_proposed;
+		write 'waiting times ('+(length(were_passengers)=length(w_times))+' ' +length(w_times)+'): ' + mean(w_times);
+		write w_times;
+		write 'total_duration '+ total_duration + ' current_hour '+ current_hour;
+		do pause ;
+   }
 } 
 
 //species that will represent the intersection node, it can be traffic lights or not, using the skill_road_node skill
@@ -432,15 +447,15 @@ species people skills:[moving] control: fsm {
 	float start_work ;
 	float end_work ;
 	point the_target <- nil ;
-	intersection target_intersection <- nil ;
 	float dist<-0.0 ;
 	float dist_covered_alone ;
+	intersection origin;
 	
 	bool starting<-true;
 	bool late<-false;
-	float actual_time_in<-0.0;
+	float actual_time_in;
 	
-	map road_knowledge<- graph_weights;
+	map road_knowledge<-graph_weights update: graph_weights;
 	path path_to_follow<-nil;
 	float look_up<-50.0;
 	string next_state<-nil;
@@ -455,9 +470,10 @@ species people skills:[moving] control: fsm {
 	float cost_proposed<-0.0;
 	float departure_time<-0.0;
 	float arrival_time<-0.0;
-	float time_to_wait <- 0.0;
+	float waiting_time<-0.0 update: ((state contains "search_lift") and got_lift) ? (current_hour - waiting_time) : waiting_time;
+	bool set_waiting_time<-true;
 	float time_trip <- 0.0;
-	float total_time_needed <- 0.0;
+	float total_time_needed  <- 0.0;
 	
 	state resting initial:true{
 		enter{
@@ -469,12 +485,11 @@ species people skills:[moving] control: fsm {
 	state search_lift_work{
 		enter{
 			the_target <- working_place.location;
-			target_intersection <- intersection closest_to working_place.location;
 			color<- #yellow;
 			late<-false;
 			next_state<-'go_work';
 		}
-		transition to: go_work when: current_hour = start_work - before_work_start;
+		transition to: go_work when: current_hour = start_work -before_work_start;
 	}
 	state wait_for_lift{
 		if current_hour>start_work and current_hour<end_work{
@@ -488,7 +503,6 @@ species people skills:[moving] control: fsm {
 	state go_work{
 		enter{
 			the_target<-working_place.location;
-			target_intersection <- intersection closest_to working_place.location;
 			if current_hour>start_work{
 //				write string(self.name)+" getting late " + string(current_hour) + " " + string(start_work);
 				late<-true;
@@ -503,8 +517,8 @@ species people skills:[moving] control: fsm {
 	state working{
 		enter{
 			color <- #blue;
-			actual_time_in<- ((actual_time_in =0.0) ? time/3600 : actual_time_in);
-//			if late{write string(self.name) + " ATI "+actual_time_in + " SUPPOSED "+start_work ;}
+			actual_time_in<-time/3600;
+			if late{write string(self.name) + " ATI "+actual_time_in + " SUPPOSED "+start_work ;}
 			next_state<-'search_lift_home';
 		}
 		transition to: search_lift_home when: current_hour = end_work;
@@ -512,25 +526,31 @@ species people skills:[moving] control: fsm {
 	state search_lift_home{
 		enter{
 			the_target <- living_place.location;
-			target_intersection <- intersection closest_to living_place.location;
 			color<- #yellow;	
 			late<-false;
 			color<-#thistle;
 			next_state<-'go_home';
-			actual_time_in<-0.0;
 		}
 		transition to: go_home when: current_hour = end_work+after_work_start;
 	}
 	state go_home{
 		enter{
 			the_target<-living_place.location;
-			target_intersection <- intersection closest_to living_place.location;
 			next_state<-'resting';
 		}
 		transition to: resting when: self.location = living_place.location;		
 	}
 	
-	reflex search_path when: the_target!=nil and path_to_follow=nil and(state contains "search_lift"){
+	reflex start_waiting_time when: (state contains "search_lift") and got_lift=false and set_waiting_time{
+		if set_waiting_time{
+			waiting_time <- current_hour;
+			set_waiting_time<-false;
+		}
+	}
+//	reflex stop_waiting_time when: (state contains "search_lift") and got_lift{
+//		waiting_time <- current_hour - waiting_time;
+//	}
+	reflex search_path when: the_target!=nil and path_to_follow=nil and ((state contains "search_lift") or (state contains 'go' and location!=the_target)){
 		if (path_to_follow = nil) {
 			//Find the shortest path using the agent's own weights to compute the shortest path
 			path_to_follow <- path_between(the_graph with_weights road_knowledge, location,the_target);
@@ -538,7 +558,9 @@ species people skills:[moving] control: fsm {
 				list<geometry> segments <- path_to_follow.segments;
 				loop seg over:segments{
 					dist <- (dist + seg.perimeter );
-					time_needed<- (time_needed + (seg.perimeter/(speed)));					
+					time_needed<- (time_needed + (seg.perimeter/(speed)));
+					time_needed<- (time_needed + (seg.perimeter/(speed)));
+					
 				}
 			}
 		}
@@ -563,10 +585,9 @@ species people skills:[moving] control: fsm {
 	}
 	aspect base {
 //		draw triangle(50) color: color rotate: 90 + heading;
-		draw circle(20) color: rgb(rnd(100,220),rnd(100,220), rnd(100,220));//color;
+		draw square(30) color: color;
 	}
 }
-
 //Car species (ensemble) that will move on the graph of roads to a target and using the skill advanced_driving
 species car skills: [advanced_driving] control:fsm{ 
 	rgb color <- rgb(rnd(200), rnd(200), rnd(200)) ;
@@ -578,7 +599,7 @@ species car skills: [advanced_driving] control:fsm{
 	float time_needed;
 	float dist <-0.0;
 	float dist_covered_cars<-0.0;
-	
+	bool gave_lift <- false;
 	int n_travels <- 0;
 	
 	map<intersection, list<people>> give_lift_to;
@@ -612,18 +633,18 @@ species car skills: [advanced_driving] control:fsm{
 		max_speed <- 1 °km/°h;
 		
 	}
-	reflex keep_in_check_real_speed{
-		float rs_ma<-(real_speed + max_acceleration);
-		float road_max;
-		float confront_car_road ;
-		if current_road!=nil{
-			road_max <- (road(current_road).maxspeed * speed_coeff);
-			confront_car_road <- (rs_ma < road_max ? rs_ma: road_max);
-		}else{
-			confront_car_road <- rs_ma;
-		}
-		real_speed <- (max_speed<confront_car_road) ? max_speed : confront_car_road;
-	}
+//	reflex keep_in_check_real_speed{
+//		float rs_ma<-(real_speed + max_acceleration);
+//		float road_max;
+//		float confront_car_road ;
+//		if current_road!=nil{
+//			road_max <- (road(current_road).maxspeed * speed_coeff);
+//			confront_car_road <- (rs_ma < road_max ? rs_ma: road_max);
+//		}else{
+//			confront_car_road <- rs_ma;
+//		}
+//		real_speed <- (max_speed<confront_car_road) ? max_speed : confront_car_road;
+//	}
 	reflex get_path_wandering when: final_target = nil and state='wander'{
 		the_target <- one_of(intersection where not each.is_traffic_signal);
 		current_path <- compute_path(graph: road_network, target: the_target );
@@ -863,6 +884,7 @@ species car skills: [advanced_driving] control:fsm{
 		int total_passengers<- length(cost_passengers.keys);
 		list<float> costs_p <- cost_passengers.values collect each[0];
 		list<float> waiting_times <- cost_passengers.values collect each[1];
+		gave_lift<-true;
 			
 		write ((car index_of self<10)? "0": "") + string(car index_of self) +", " +n_travels +", " +stats_path_time+", " +total_stops+", " +total_passengers+", " +waiting_times+ ", "+ costs_p; 
 		state<-'moving';
@@ -876,9 +898,8 @@ species car skills: [advanced_driving] control:fsm{
 		ask to_capture{
 			got_lift<-true;
 			cost_proposed <- myself.cost_passengers[name][0];
-			time_to_wait <- myself.cost_passengers[name][1];
 			time_trip <- myself.cost_passengers[name][2];
-			total_time_needed <- time_to_wait + time_trip;
+			total_time_needed <- waiting_time + time_trip;
 		}
 		capture to_capture as: passenger{} 
 		write self.name + " h"+current_hour+" at: " + the_target + " has captured: " + names;
@@ -912,9 +933,12 @@ species car skills: [advanced_driving] control:fsm{
 					substitute_state<-p.next_state;
 				}
 				add substitute_state to: states_dropped;
-				release p in:world as:people{
+				ask p{
 					state<- substitute_state;
+					location<-myself.location;
+					path_to_follow<-nil;
 				}
+				release p in:world as:people{}
 			}
 		}
 		if !empty(dropped){
