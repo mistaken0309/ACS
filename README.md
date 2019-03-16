@@ -4,8 +4,8 @@ Main Authors:
 - [Annalisa Congiu](mailto:annalisa.congiu@studenti.unitn.it)
 - [Antonio Bucchiarone](mailto:)
 
-This repository contains a GAMA platgorm project for the simulation of a system
-of ridesharing with autonomous cars. There are scripts for a centralised and a decentralised
+This repository contains a GAMA platform project for the simulation of a system
+of ridesharing with autonomous vehicles (AV). There are scripts for a centralised and a decentralised
 version of control.
 
 ## Installation
