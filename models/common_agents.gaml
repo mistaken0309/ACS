@@ -7,8 +7,8 @@
 
 
 model common_agents
-
-import "./../models/simulationAVmain.gaml"
+import "./../models/Parameters.gaml"
+//import "./../models/simulationAVmain.gaml"
 
 /* Species common to both centralised and decentralised simulation.
  * Precisely:

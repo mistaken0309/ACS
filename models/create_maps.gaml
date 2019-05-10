@@ -67,7 +67,10 @@ global{
 				}
 			}
 		}
-//		TODO kill roads based on position		
+
+
+
+//		Some roads are to be killed specifically in the map used since they are not connected to anything
 //		ask road [1742]{ write "die "+ self.name ; do die; }
 //		ask road[1460]{ write "die "+ self.name ; do die; }
 //		ask road[1459]{ write "die "+ self.name ; do die; }
@@ -95,7 +98,7 @@ global{
 
 		write "Road and node agents created";
 		
-		
+//		create intersection agent at end/beginning of road when one does not already exist
 		ask road {
 			point ptF <- first(shape.points);
 			if (not(ptF in nodes_map.keys)) {
@@ -113,6 +116,7 @@ global{
 		
 		write "Supplementary node agents created";
 		
+//		kill intersection agents that do not overlap any road
 		ask intersection {
 			if (empty (road overlapping (self))) {
 				do die;
@@ -123,10 +127,12 @@ global{
 		}
 		write "node agents filtered";
 		
-		
+//		create building species agents from the data in the OSM file
 		create osm_agent from:osmfile with: [building_str::string(read("building"))];
 		write "Building agent created";
 		
+//		on the base of the string characterising the building the agent 
+//		is assigned to either the residential or the industrial cathegory  
 		ask osm_agent {
 			if (length(shape.points) = 1) {}
 			if(length(shape.points)>1){
@@ -168,7 +174,7 @@ global{
 		}
 		write "building agents filtered";
 		
-		
+//		the agents extracted and their main/useful characterists are stored, on the base of their species in .shp file, so not to load the osm file everytime
 		save road type:"shp" to:"../includes/roads.shp" with:[lanes::"lanes",maxspeed::"maxspeed", oneway::"oneway", junction::"junction"] ;
 		save intersection type:"shp" to:"../includes/nodes.shp" with:[type::"type", crossing::"crossing"] ;
 		save building type:"shp" to:"../includes/buildings.shp" with:[type::"type", group::"group"] ;
@@ -190,10 +196,6 @@ species road skills:[skill_road]{
 		draw shape color: color end_arrow:1; 
 	}
 } 
-
-species osm_agent {
-	string building_str;
-} 
 	
 species intersection skills:[skill_road_node]{
 	string type;
@@ -201,6 +203,10 @@ species intersection skills:[skill_road_node]{
 	aspect base { 
 		draw square(1) color: #mediumaquamarine ;
 	}
+} 
+
+species osm_agent {
+	string building_str;
 } 
 
 species building{
