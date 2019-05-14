@@ -17,57 +17,15 @@ import "./../models/cenAV.gaml"
  * Decentralised  simulation of a Autonomous Vehicles Carpooling system
  * */
 
-global {   
-//	file shape_file_roads  <- file("../includes/roads.shp") ;
-//	file shape_file_nodes  <- file("../includes/nodes.shp");
-//	file shape_file_buildings  <- file("../includes/buildings.shp");
-//	geometry shape <- envelope(shape_file_roads);
-//	
-//	graph the_graph;  
-//	graph road_network;  
-//	map road_weights;
-//	map graph_weights;
-//	list<cenAV> not_full_cars;
-//	
-//	float step <- 5 #s;	
-//	
-//	int nb_people <- 500 parameter: "People in the system" category: "Initial";
-//	int nb_car <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5)  parameter: "AV in the system" category: "Initial";
-//	int nb_cars <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5)  parameter: "Cars in the system" category: "Initial";
-//	bool centralised_ON <- true parameter: "Centralised or Decentralised: " category: "Initial"; //0= centralised, 1 = decentralised
-//	bool not_reset<-true;
-//
-//	//represent the day time for the agent to inform them to go work or home
-//	float current_hour update: ((time/#hour)-(g)*24);
-//	int h update: (time/#hour) mod 24; 
-//	int g update: int(time/#hour/24); 
-//	
-//	//Variables to manage the minimal and maximal time to start working/go home
-//	float min_work_start <- 0.5 parameter: "Min. start hour: " category: "Hours";
-//	float max_work_start <- 1.0 parameter: "Max. start hour: " category: "Hours";
-//	float min_work_end <- 17.0 parameter: "Min. end hour: " category: "Hours";
-//	float max_work_end <- 18.0 parameter: "Max. end hour: " category: "Hours";
-//	
-//	float before_work_search<-0.5  parameter: "Minutes before work to search for lift: " category: "Hours"; //(30 minuti)
-//	float before_work_start	<-0.25  parameter: "Minutes before work to go alone: " category: "Hours"; // (15 minuti)
-//	float after_work_start<-0.5  parameter: "Minutes after work to go alone: " category: "Hours";
-//	
-//	//Manage the speed allowed in the model for the people agents
-//	float min_speed <- 5.0  #km / #h;
-//	float max_speed <- 20.0 #km / #h; 
-//	
-//	float cost_km <- 1.50;
-//	
-//	float v_length <- 5.0#m;
-//	
-//	float stats_grouping_time <-0.0;
-//	float stats_path_time <-0.0;
-//	int n_grouping;
-//	
-//	float start_simulation;
+global {
+	//represent the day time for the agent to inform them to go work or home
+	float current_hour update: ((time/#hour)-(g)*24);
+	int h update: (time/#hour) mod 24; 
+	int g update: int(time/#hour/24); 
 	
 	init {
-		write string((nb_people mod 5) >0) + " " + string(nb_car);
+		
+		write string((nb_people mod 5) >0) + " " + string(nb_car)+ " " + centralised_ON;
 		//create the intersection and check if there are traffic lights or not by looking the values inside the type column of the shapefile and linking
 		// this column to the attribute is_traffic_signal. 
 		create intersection from: shape_file_nodes with:[is_traffic_signal::(read("type") = "traffic_signals")];
@@ -205,10 +163,7 @@ global {
 			proba_breakdown <- 0.00001;
 		}	
 	}
-	reflex stop_simulation when: remove_duplicates(people collect each.state)=['working'] and (length(list(people))=nb_people){
-		write "passengers taken: " +length(people where (each.got_lift=true));
-      do pause ;
-   }
+	
 	reflex update_road_speed {
 		road_weights <- road as_map (each::(each.shape.perimeter * (each.speed_coeff)));
 		road_network <- road_network with_weights road_weights;
@@ -366,8 +321,24 @@ global {
 }
 
 
-experiment Centralised type: gui {
-	float minimum_cycle_duration <- 0.01;
+experiment Simulation type: gui {
+	float minimum_cycle_duration <- 0.01;	
+	
+	parameter "Centralised_ON" var: centralised_ON <- true category: "Initial";
+	parameter "People in the system" var: nb_people <- 500 category: "Initial";
+	parameter "AV in the system" var:nb_car <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5) category: "Initial";
+	parameter "Cars in the system" var:nb_cars <- ((nb_people mod 5) >0) ? int(nb_people/5) + 1 : int(nb_people/5) category: "Initial";
+	
+	
+	parameter "Min. start hour: " var:min_work_start <- 0.5 category: "Hours";
+	parameter "Max. start hour: "  var:max_work_start <- 1.0 category: "Hours";
+	parameter "Min. end hour: "  var:min_work_end <-17.0 category: "Hours";
+	parameter "Max. end hour: " var:max_work_end <- 18.0 category: "Hours";
+	
+	parameter "Minutes before work to search for lift: " var: before_work_search<-0.5 category: "Hours"; //(30 minuti)
+	parameter "Minutes before work to go alone: " var: before_work_start <-0.25 category: "Hours"; // (15 minuti)
+	parameter "Minutes after work to go alone: " var:after_work_start<-0.5 category: "Hours";
+	
 	output {
 		monitor "Current hour" value: current_hour;
 		
@@ -380,27 +351,10 @@ experiment Centralised type: gui {
 			species road aspect: base ;
 			species intersection aspect: base;
 			species cenAV aspect: base;
-			species cars aspect: base;
-			species people aspect: base transparency: 0.2;
-			
-		}
-	}	
-}
-
-experiment DecentralisedSimulation type: gui {
-	float minimum_cycle_duration <- 0.01;
-	
-	output {
-		monitor "Current hour" value: current_hour;
-		
-		display city_display {
-			species building aspect: base refresh:false;
-			species road aspect: base ;
-			species intersection aspect: base;
 			species decAV aspect: base;
 			species cars aspect: base;
 			species people aspect: base transparency: 0.2;
 			
 		}
-	}
+	}	
 }

@@ -7,6 +7,8 @@
 
 model decAV
 import "./../models/common_agents.gaml"
+//import "./../models/simulationAVmain.gaml"
+
 /* Species representing Autonomous Vehicles in the decentralised simulation. */
 
 //Car species (ensemble) that will move on the graph of roads to a target and using the skill advanced_driving

@@ -8,7 +8,7 @@
 
 model common_agents
 import "./../models/Parameters.gaml"
-//import "./../models/simulationAVmain.gaml"
+import "./../models/simulationAVmain.gaml"
 
 /* Species common to both centralised and decentralised simulation.
  * Precisely:
@@ -332,9 +332,7 @@ species people skills:[moving] control: fsm {
 				list<geometry> segments <- path_to_follow.segments;
 				loop seg over:segments{
 					dist <- (dist + seg.perimeter );
-					time_needed<- (time_needed + (seg.perimeter/(speed)));
-					time_needed<- (time_needed + (seg.perimeter/(speed)));
-					
+					time_needed<- (time_needed + (seg.perimeter/(speed)));					
 				}
 			}
 		}

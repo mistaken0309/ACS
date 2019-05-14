@@ -6,6 +6,7 @@
 */
 model cenAV
 import "./../models/common_agents.gaml"
+//import "./../models/simulationAVmain.gaml"
 
 /* Species representing Autonomous Vehicles in the centralised simulation. */
 
@@ -285,6 +286,7 @@ species cenAV parent:cars skills: [advanced_driving] control:fsm{
 		write ((cenAV index_of self<10)? "0": "") + string(cenAV index_of self) +", " +n_travels +", " +stats_path_time+", " +total_stops+", " +total_passengers+", " +waiting_times+ ", "+ costs_p; 
 		state<-'moving';
 	}
+	
 	reflex capture_people when: !empty(give_lift_to) and state='stop'{
 		write self.name + " the_target: "+ the_target + " | "+ give_lift_to[the_target]; 
 		list<string>names <- give_lift_to[the_target] collect each.name;
@@ -304,6 +306,7 @@ species cenAV parent:cars skills: [advanced_driving] control:fsm{
 		state<-'moving';
 		write self.name + " h"+current_hour+" changed state back to moving";
 	}
+	
 	reflex drop_people when:!empty(passengers) and state='stop'{
 		list<string>names;
 		list<string> states_dropped;
